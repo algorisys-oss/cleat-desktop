@@ -83,3 +83,49 @@ export function formatPorts(
   }
   return parts.join(", ");
 }
+
+/**
+ * Split a command line into argv, honouring single and double quotes.
+ *
+ * Deliberately *not* a shell: no variable expansion, no operators, no globbing.
+ * It exists only so a quoted argument survives as one argument. The backend's
+ * `command` field is exact argv, so plain whitespace splitting would silently
+ * turn `sh -c "while true; do :; done"` into seven arguments with `-c`
+ * receiving only `while` — see the comment on CreateContainerRequest.
+ *
+ * Callers should show the result back to the user rather than relying on it
+ * being guessed correctly.
+ */
+export function tokenizeCommand(input: string): string[] {
+  const argv: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  // Tracked separately from `current` so that `""` yields an empty argument
+  // rather than disappearing.
+  let started = false;
+
+  for (const ch of input) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (started) {
+        argv.push(current);
+        current = "";
+        started = false;
+      }
+      continue;
+    }
+    current += ch;
+    started = true;
+  }
+  if (started) argv.push(current);
+  return argv;
+}

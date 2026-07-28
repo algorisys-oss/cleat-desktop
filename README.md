@@ -17,6 +17,8 @@ Built with Rust + Tauri v2 and React/TypeScript. No Electron, no background HTTP
 
 **Containers** — list running and stopped, start / stop / restart / pause / resume / remove, inspect full JSON, health status, and control services inside a container via its init system.
 
+**Run a container** — create one from any image with ports, environment, volumes, network, restart policy and auto-remove. The command field is exact argv, not a shell string, and shows you how it tokenised before you commit.
+
 **Interactive terminal** — a real TTY attached to a shell inside a running container, with resize tracking so full-screen programs render correctly. The shell is probed per container, so it works on images without bash.
 
 **Live logs** — real follow mode with search and stdout/stderr filtering, not a one-shot `tail`.
@@ -208,7 +210,7 @@ Roadmap: [tauri-rs/todo.md](tauri-rs/todo.md).
 
 Working and in use, pre-1.0. Verified against Docker Engine 29.6.1 and Podman 4.9.3 on Linux. Not yet exercised on macOS or Windows.
 
-Known gaps: no create-container UI form (the backend command exists and is tested), no image building, no container file browser.
+Known gaps: no image building, no container file browser, no disk-usage breakdown.
 
 ## Licence
 

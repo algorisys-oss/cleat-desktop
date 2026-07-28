@@ -20,6 +20,7 @@ import {
 } from "../ui";
 import { errorMessage } from "../types";
 import { formatAge, formatBytes, primaryTag, shortId } from "../util";
+import RunImage from "./RunImage";
 
 export default function Images() {
   const images = usePolled<Image[]>(() => api.listImages(), 8000);
@@ -54,6 +55,7 @@ export default function Images() {
   const [removing, setRemoving] = useState<Image | null>(null);
   const [inspecting, setInspecting] = useState<Image | null>(null);
   const [pruning, setPruning] = useState(false);
+  const [running, setRunning] = useState<string | null>(null);
 
   const rows = useMemo(() => {
     const list = images.data ?? [];
@@ -172,6 +174,19 @@ export default function Images() {
                           → {t.kind}
                         </Button>
                       ))}
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        disabled={i.dangling}
+                        title={
+                          i.dangling
+                            ? "Untagged images cannot be run by name"
+                            : "Create and start a container from this image"
+                        }
+                        onClick={() => setRunning(primaryTag(i.repoTags))}
+                      >
+                        Run
+                      </Button>
                       <Button size="sm" variant="ghost" onClick={() => setInspecting(i)}>
                         Inspect
                       </Button>
@@ -195,6 +210,8 @@ export default function Images() {
           }}
         />
       )}
+
+      {running && <RunImage image={running} onClose={() => setRunning(null)} />}
 
       {inspecting && <ImageInspectModal image={inspecting} onClose={() => setInspecting(null)} />}
 

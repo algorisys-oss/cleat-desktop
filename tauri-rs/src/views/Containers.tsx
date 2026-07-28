@@ -22,6 +22,7 @@ import {
 } from "../ui";
 import { formatAge, formatBytes, formatPorts, healthTone, shortId, stateTone } from "../util";
 import ExecTerminal from "./ExecTerminal";
+import RunImage from "./RunImage";
 
 export default function Containers() {
   const [showAll, setShowAll] = useState(true);
@@ -33,6 +34,7 @@ export default function Containers() {
 
   const [logsFor, setLogsFor] = useState<Container | null>(null);
   const [execFor, setExecFor] = useState<Container | null>(null);
+  const [creating, setCreating] = useState(false);
   const [statsFor, setStatsFor] = useState<Container | null>(null);
   const [inspectFor, setInspectFor] = useState<Container | null>(null);
   const [servicesFor, setServicesFor] = useState<Container | null>(null);
@@ -98,6 +100,9 @@ export default function Containers() {
           <span>{rows.length} shown</span>
           <Button size="sm" variant="ghost" onClick={containers.reload}>
             Refresh
+          </Button>
+          <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
+            New container
           </Button>
         </div>
       </div>
@@ -282,6 +287,13 @@ export default function Containers() {
 
       {logsFor && <LogsModal container={logsFor} onClose={() => setLogsFor(null)} />}
       {execFor && <ExecTerminal container={execFor} onClose={() => setExecFor(null)} />}
+      {creating && (
+        <RunImage
+          image=""
+          onClose={() => setCreating(false)}
+          onCreated={() => containers.reload()}
+        />
+      )}
       {statsFor && <StatsModal container={statsFor} onClose={() => setStatsFor(null)} />}
       {inspectFor && <InspectModal container={inspectFor} onClose={() => setInspectFor(null)} />}
       {servicesFor && (

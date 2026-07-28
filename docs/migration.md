@@ -79,8 +79,7 @@ Added in the port:
 
 Backend command exists and is tested; only the UI is missing:
 
-- [ ] **Create container from image** — `create_container` handles ports, env,
-      volumes, network, restart policy, auto-remove. Needs a form.
+- [x] **Create container from image** — form wired to `create_container`.
 - [ ] **Connect / disconnect container to network** — `connect_network` and
       `disconnect_network` exist. Needs UI affordance.
 

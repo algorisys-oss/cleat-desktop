@@ -64,7 +64,8 @@ src/
 - [x] Remove container (with force and volume cleanup options)
 - [x] Container services (list/start/stop/restart units via the container's init system)
 - [x] Create container from image — backend command + validation
-- [ ] Create-container UI form (backend `create_container` is done and tested)
+- [x] Create-container UI form — ports, env, volumes, network, restart policy,
+      auto-remove, and quote-aware argv with a preview of the tokenisation
 - [x] Exec into container (integrated terminal via PTY) — TTY exec with stdin,
       resize tracking, and a per-image shell probe; xterm.js front end
 - [ ] Container file browser
