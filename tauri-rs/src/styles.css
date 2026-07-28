@@ -24,6 +24,25 @@ body,
   height: 100%;
 }
 
+/* Native controls (<select> and its popup, checkboxes, scrollbars) are drawn by
+   the platform, not by our CSS. Without this WebKitGTK renders them with the
+   *light* system theme, which put near-black option text on our dark surface —
+   the closed <select> was effectively unreadable however it was classed. */
+:root {
+  color-scheme: dark;
+}
+
+/* The popup list is a platform widget and does not inherit the <select>'s
+   classes, so its colours have to be set on the options themselves. */
+select option {
+  background-color: var(--color-surface-2);
+  color: var(--color-ink);
+}
+
+select option:disabled {
+  color: var(--color-ink-faint);
+}
+
 body {
   margin: 0;
   background: var(--color-surface-0);

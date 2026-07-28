@@ -61,8 +61,89 @@ Or directly, from `tauri-rs/`:
 ```sh
 npm install
 npm run tauri dev
-npm run tauri build       # release bundles
 ```
+
+> **Running from a snap-confined terminal** (the VS Code snap, and others) fails
+> with:
+>
+> ```
+> symbol lookup error: /snap/core20/current/lib/x86_64-linux-gnu/libpthread.so.0:
+> undefined symbol: __libc_pthread_init, version GLIBC_PRIVATE
+> ```
+>
+> The terminal exports GTK/GIO/loader paths pointing into the snap, so the app
+> pulls in the snap's older glibc. `dev-start.sh` detects and strips them
+> automatically. If you invoke `npm run tauri dev` (or the built binary)
+> yourself, clear them first:
+>
+> ```sh
+> unset LD_LIBRARY_PATH LD_PRELOAD GTK_PATH GTK_EXE_PREFIX GIO_MODULE_DIR
+> unset GDK_PIXBUF_MODULE_FILE GSETTINGS_SCHEMA_DIR LOCPATH
+> ```
+>
+> Launching from a normal terminal avoids it entirely.
+
+## Building a production executable
+
+```sh
+cd tauri-rs
+npm ci                    # reproducible install from package-lock.json
+npm run tauri build
+```
+
+That runs `npm run build` (tsc + Vite → `dist/`), compiles the Rust in release
+mode, and packages the result. The first run compiles the whole dependency tree
+— expect several minutes; subsequent builds are much faster.
+
+**What you get**, under `tauri-rs/src-tauri/target/release/`:
+
+| Path | Size | What it is |
+|---|---|---|
+| `cleat` | 19 MB | The bare executable. Needs the WebKitGTK runtime present on the machine |
+| `bundle/deb/Cleat_0.1.0_amd64.deb` | 6.0 MB | Debian/Ubuntu package |
+| `bundle/rpm/Cleat-0.1.0-1.x86_64.rpm` | 6.0 MB | Fedora/RHEL package |
+| `bundle/appimage/Cleat_0.1.0_amd64.AppImage` | 78 MB | Self-contained, no install step |
+
+Sizes are from an actual build of 0.1.0 on Linux x86-64.
+
+The `.deb` and `.rpm` are small because they link the system WebKitGTK and
+declare it as a dependency rather than shipping a browser engine — the reason a
+Tauri package is ~6 MB where the Electron predecessor was an order of magnitude
+larger. The AppImage is 78 MB precisely because it does the opposite: it bundles
+the GTK/WebKit stack so it can run without installing anything. Pick the
+packages for distribution and the AppImage for a machine you don't control.
+
+Install and run:
+
+```sh
+sudo dpkg -i src-tauri/target/release/bundle/deb/Cleat_0.1.0_amd64.deb && cleat
+# or, no install:
+chmod +x src-tauri/target/release/bundle/appimage/Cleat_0.1.0_amd64.AppImage
+./src-tauri/target/release/bundle/appimage/Cleat_0.1.0_amd64.AppImage
+```
+
+**Building only what you need.** `bundle.targets` in
+[`tauri.conf.json`](tauri-rs/src-tauri/tauri.conf.json) is `"all"`, so every
+format for the host platform is produced. To skip the slow AppImage step:
+
+```sh
+npm run tauri build -- --bundles deb          # deb only
+npm run tauri build -- --no-bundle            # bare binary, no packaging
+```
+
+**Runtime requirements on the target machine** are lighter than the build's: the
+WebKitGTK runtime (`libwebkit2gtk-4.1-0`) and a reachable Docker or Podman
+socket. The `-dev` packages listed above are needed only to compile.
+
+**Cross-platform builds are not wired up.** Tauri bundles for the host platform
+only — a Linux machine cannot produce a `.dmg` or `.msi`. macOS and Windows
+bundles need a CI runner per platform, which is on the roadmap along with
+signing and the auto-updater. Nothing here is code-signed, so macOS Gatekeeper
+and Windows SmartScreen would both object today.
+
+There is no `--version` flag — the binary takes no arguments and opens the
+window. The version comes from `tauri.conf.json` and is baked into the bundle
+filenames.
 
 ## How it's built
 

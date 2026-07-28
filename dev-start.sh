@@ -47,10 +47,23 @@ Then re-run this script."
 fi
 
 # Snap-confined terminals (e.g. the VS Code snap) export a library path into
-# /snap/core*/lib. The Tauri binary then loads the snap's glibc and dies with
-# "undefined symbol: __libc_pthread_init". Drop those before launching.
-if [ -n "${SNAP:-}" ]; then
-  warn "running inside a snap environment (\$SNAP=$SNAP); clearing its library paths"
+# /snap/core*/lib. The Tauri binary then loads the snap's older glibc and dies
+# with "undefined symbol: __libc_pthread_init, version GLIBC_PRIVATE". Drop
+# those before launching.
+#
+# Checked two ways because either alone has a hole: $SNAP identifies the common
+# case, but a terminal can scrub it while still exporting snap loader paths, and
+# that fails identically with the guard silently doing nothing.
+snap_reason=""
+case ":${LD_LIBRARY_PATH:-}:${LD_PRELOAD:-}:" in
+  *:/snap/*) snap_reason="snap paths in LD_LIBRARY_PATH/LD_PRELOAD" ;;
+esac
+if [ -z "$snap_reason" ] && [ -n "${SNAP:-}" ]; then
+  snap_reason="\$SNAP=$SNAP"
+fi
+
+if [ -n "$snap_reason" ]; then
+  warn "snap environment detected ($snap_reason); clearing its library paths"
   unset LD_LIBRARY_PATH LD_PRELOAD GTK_PATH GTK_EXE_PREFIX GIO_MODULE_DIR
   unset GDK_PIXBUF_MODULE_FILE GSETTINGS_SCHEMA_DIR LOCPATH
 fi
