@@ -26,6 +26,14 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "license": "MIT",
+    "licenseFile": "../../LICENSE",
+    "copyright": "Copyright (c) 2026 Rajesh Pillai",
+    "publisher": "Rajesh Pillai",
+    "homepage": "https://github.com/algorisys-oss/cleat-desktop",
+    "category": "DeveloperTool",
+    "shortDescription": "Container management for Docker and Podman",
+    "longDescription": "A fast, native desktop app for managing Docker and Podman containers side by side from one window: containers, live logs and stats, an interactive terminal, images, networks, volumes and compose.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

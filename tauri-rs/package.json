@@ -2,6 +2,14 @@
   "name": "cleat",
   "private": true,
   "version": "0.1.0",
+  "description": "Container management for Docker and Podman",
+  "license": "MIT",
+  "author": "Rajesh Pillai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/algorisys-oss/cleat-desktop.git"
+  },
+  "homepage": "https://github.com/algorisys-oss/cleat-desktop",
   "type": "module",
   "scripts": {
     "dev": "vite",

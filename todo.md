@@ -28,6 +28,7 @@ Not started:
 
 ## Housekeeping
 
-- [ ] Add a `LICENSE` file if the bundled MIT text needs adjusting
+- [x] MIT `LICENSE` at the repo root, declared in `Cargo.toml`, `package.json`
+      and the Tauri bundle config so the deb/rpm/msi carry it too
 - [ ] Consider renaming `tauri-rs/` to something less scaffold-flavoured
 - [ ] Verify on macOS and Windows (only Linux has been exercised)

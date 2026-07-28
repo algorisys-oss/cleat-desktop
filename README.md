@@ -213,3 +213,7 @@ Known gaps: no create-container UI form (the backend command exists and is teste
 ## Licence
 
 MIT — see [LICENSE](LICENSE).
+
+Declared in `Cargo.toml`, `package.json` and the Tauri bundle config, so the
+`.deb`, `.rpm` and `.msi` packages carry the licence in their metadata rather
+than only the repository having it.

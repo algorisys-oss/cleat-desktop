@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Container management for Docker and Podman"
 authors = ["Rajesh Pillai"]
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/algorisys-oss/cleat-desktop"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
