@@ -117,14 +117,51 @@ Details that matter in practice:
   multi-gigabyte image never lands on disk. Byte progress is throttled to one
   event per 4 MB; per-chunk emission would push thousands of events per image.
 
+### Exec: the one bidirectional stream
+
+Every stream above is one-way. The interactive terminal is not, and that single
+difference drives its design.
+
+The output half is ordinary — a task pumps bytes onto a channel, registered under
+`exec:<channel>` like any other. The input half has no precedent: keystrokes
+arrive one `exec_write` IPC call at a time and must all reach the *same* writer,
+so the write half of the attached connection is parked in `AppState` alongside
+the exec id rather than being owned by the pump task.
+
+- **The session key is the channel name**, not the container id. Two terminals
+  into one container are legitimate, so the per-container keying used by logs and
+  stats would collide.
+- **`tty: true` changes the wire format.** The daemon stops multiplexing, so the
+  response is raw terminal bytes rather than 8-byte-framed stdout/stderr records.
+  The `LogLine` mapping used by log follow is therefore the wrong template — it
+  trims newlines and lossily decodes UTF-8, both fatal here.
+- **Traffic is base64 in both directions.** Tauri events are JSON: raw bytes
+  would serialise as an array of integers (several times larger than base64), and
+  a `String` would force a lossy decode that corrupts escape sequences and any
+  multi-byte character split across a chunk boundary.
+- **Resize is a second round trip.** The size cannot be set at create time, so
+  `exec_start` attaches and then calls `resize_exec`. An initial resize failure is
+  logged but does not abort the session — a terminal stuck at 80×24 beats no
+  terminal. Podman serves this endpoint from its compatibility layer, which is
+  why the shared suite pins it on both runtimes.
+- **The shell is probed, not assumed.** `/bin/bash` is absent from Alpine and most
+  slim images; `detect_shell()` asks the container what it has.
+
 ## State
 
-[`state.rs`](../tauri-rs/src-tauri/src/state.rs) holds two things behind
-`RwLock`s: the active runtime and the live stream registry.
+[`state.rs`](../tauri-rs/src-tauri/src/state.rs) holds three things behind
+`RwLock`s: the active runtime, the live stream registry, and interactive exec
+sessions.
 
 `select_runtime()` connects and pings the *new* runtime before dropping the old
 one, so a failed switch leaves the app on a working runtime. Switching also
 aborts all live streams, since they belong to the previous daemon.
+
+Exec sessions are registered in *two* places — the pump task in `streams`, the
+stdin writer in `execs` — so anything that tears down streams must clear both.
+`stop_all_streams()` does; dropping only the task would strand an upgraded socket
+against a runtime the app has stopped using. `stop_all_streams_clears_exec_sessions`
+pins this.
 
 ## Error mapping
 

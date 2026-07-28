@@ -21,6 +21,7 @@ import {
   useToast,
 } from "../ui";
 import { formatAge, formatBytes, formatPorts, healthTone, shortId, stateTone } from "../util";
+import ExecTerminal from "./ExecTerminal";
 
 export default function Containers() {
   const [showAll, setShowAll] = useState(true);
@@ -31,6 +32,7 @@ export default function Containers() {
   const toast = useToast();
 
   const [logsFor, setLogsFor] = useState<Container | null>(null);
+  const [execFor, setExecFor] = useState<Container | null>(null);
   const [statsFor, setStatsFor] = useState<Container | null>(null);
   const [inspectFor, setInspectFor] = useState<Container | null>(null);
   const [servicesFor, setServicesFor] = useState<Container | null>(null);
@@ -226,6 +228,21 @@ export default function Containers() {
                         <Button
                           size="sm"
                           variant="ghost"
+                          // Exec needs a live process namespace to join; the
+                          // daemon rejects it otherwise.
+                          disabled={!running}
+                          onClick={() => setExecFor(c)}
+                          title={
+                            running
+                              ? "Open an interactive shell in this container"
+                              : "Container must be running"
+                          }
+                        >
+                          Terminal
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
                           disabled={!running}
                           onClick={() => setStatsFor(c)}
                         >
@@ -264,6 +281,7 @@ export default function Containers() {
       </Panel>
 
       {logsFor && <LogsModal container={logsFor} onClose={() => setLogsFor(null)} />}
+      {execFor && <ExecTerminal container={execFor} onClose={() => setExecFor(null)} />}
       {statsFor && <StatsModal container={statsFor} onClose={() => setStatsFor(null)} />}
       {inspectFor && <InspectModal container={inspectFor} onClose={() => setInspectFor(null)} />}
       {servicesFor && (

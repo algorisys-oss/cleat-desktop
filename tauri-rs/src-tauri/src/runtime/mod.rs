@@ -14,7 +14,7 @@ pub mod raw;
 
 use crate::error::AppResult;
 use crate::model::{
-    Container, ComposeService, CreateContainerRequest, Image, LogLine, Network, PullProgress,
+    ComposeService, Container, CreateContainerRequest, Image, LogLine, Network, PullProgress,
     RuntimeInfo, RuntimeKind, Stats, SystemSummary, Volume,
 };
 use async_trait::async_trait;
@@ -29,6 +29,38 @@ pub type PullStream = Pin<Box<dyn Stream<Item = AppResult<PullProgress>> + Send>
 pub type ByteStream = Pin<Box<dyn Stream<Item = AppResult<bytes::Bytes>> + Send + 'static>>;
 /// Status lines emitted by a runtime while it loads an imported image.
 pub type ImportStream = Pin<Box<dyn Stream<Item = AppResult<String>> + Send>>;
+/// Write half of an attached exec session — keystrokes on their way to the
+/// process inside the container.
+pub type ExecStdin = Pin<Box<dyn tokio::io::AsyncWrite + Send>>;
+
+/// A live interactive exec session.
+///
+/// Unlike every other stream in this app, exec is bidirectional: `output` is
+/// pumped onto a Tauri event channel, while `stdin` has to outlive the call
+/// that created it so later keystrokes can be written to it. The command layer
+/// parks it in [`AppState`](crate::state::AppState) for exactly that reason.
+///
+/// `output` carries *raw* terminal bytes. Because the session is TTY-mode the
+/// daemon does not multiplex it, so there are no stream headers to strip — and
+/// nothing here may reinterpret the bytes: escape sequences, partial UTF-8 at a
+/// chunk boundary and absent trailing newlines are all normal and all
+/// significant.
+pub struct ExecAttach {
+    /// Needed for resize, which is addressed by exec id rather than session.
+    pub exec_id: String,
+    pub output: ByteStream,
+    pub stdin: ExecStdin,
+}
+
+/// Hand-written because neither half is `Debug`; `expect_err` in the tests
+/// needs the bound.
+impl std::fmt::Debug for ExecAttach {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecAttach")
+            .field("exec_id", &self.exec_id)
+            .finish_non_exhaustive()
+    }
+}
 
 /// The compose verbs the UI can trigger. A closed set, never a free string, so
 /// nothing user-supplied can become an argument.
@@ -87,6 +119,28 @@ pub trait ContainerRuntime: Send + Sync {
     async fn container_stats(&self, id: &str) -> AppResult<Stats>;
     /// Continuous stats, one sample per daemon tick (~1s).
     async fn stream_stats(&self, id: &str) -> AppResult<StatsStream>;
+
+    /// Attach an interactive TTY to a new process inside a running container.
+    ///
+    /// `argv` is deliberately unconstrained — running a command of the user's
+    /// choosing *is* the feature, and it is safe here for the reason the
+    /// compose path is not: this is an argv vector handed to the daemon, never
+    /// a shell string. See `docs/security.md`.
+    async fn exec_start(
+        &self,
+        id: &str,
+        argv: Vec<String>,
+        cols: u16,
+        rows: u16,
+    ) -> AppResult<ExecAttach>;
+
+    /// Tell the daemon the terminal's new size. Without this the process sees
+    /// whatever it was given at attach time, and full-screen programs draw into
+    /// the wrong geometry.
+    async fn exec_resize(&self, exec_id: &str, cols: u16, rows: u16) -> AppResult<()>;
+
+    /// Best-effort probe for an interactive shell that exists in this image.
+    async fn detect_shell(&self, id: &str) -> AppResult<String>;
 
     /// List services inside a container via its init system.
     async fn list_container_services(&self, id: &str) -> AppResult<Vec<(String, String)>>;

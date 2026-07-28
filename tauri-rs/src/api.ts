@@ -228,6 +228,99 @@ export function subscribeComposeExec(
 export const stopComposeExec = (projectDir: string) =>
   invoke<boolean>("stop_compose_exec", { projectDir });
 
+// ------------------------------------------------------------------------ exec
+
+/** Ask the container which interactive shell it actually has. */
+export const detectShell = (id: string) => invoke<string>("detect_shell", { id });
+
+/**
+ * A live terminal session.
+ *
+ * Unlike the subscribe* helpers this cannot collapse to a single dispose
+ * function: exec is two-way, so the caller keeps needing the session handle to
+ * push keystrokes and size changes back down.
+ */
+export interface ExecSession {
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  dispose(): void;
+}
+
+const encoder = new TextEncoder();
+
+const toBase64 = (bytes: Uint8Array) => {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+};
+
+const fromBase64 = (b64: string) => {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+};
+
+/**
+ * Attach a TTY to a new process inside a running container.
+ *
+ * Both legs are base64 over the IPC boundary. `onData` therefore hands back raw
+ * bytes, not a string: terminal output carries escape sequences and can split a
+ * multi-byte character across chunks, so decoding here would corrupt it. Give
+ * the bytes to xterm and let it do the decoding statefully.
+ */
+export async function openExec(
+  id: string,
+  argv: string[],
+  size: { cols: number; rows: number },
+  onData: (bytes: Uint8Array) => void,
+  onEnd?: (error: string | null) => void,
+): Promise<ExecSession> {
+  const channel = nextChannel("exec");
+  const unlisteners: UnlistenFn[] = [];
+  let disposed = false;
+
+  unlisteners.push(await listen<string>(channel, (e) => onData(fromBase64(e.payload))));
+  unlisteners.push(
+    await listen<StreamEnd>(`${channel}:end`, (e) => onEnd?.(e.payload.error)),
+  );
+
+  try {
+    await invoke<void>("exec_start", {
+      id,
+      argv,
+      cols: size.cols,
+      rows: size.rows,
+      channel,
+    });
+  } catch (err) {
+    unlisteners.forEach((u) => u());
+    throw err;
+  }
+
+  return {
+    write(data: string) {
+      if (disposed) return;
+      // Errors here are almost always "the process just exited", which the end
+      // frame reports properly; surfacing them per keystroke would be noise.
+      void invoke<void>("exec_write", {
+        session: channel,
+        data: toBase64(encoder.encode(data)),
+      }).catch(() => {});
+    },
+    resize(cols: number, rows: number) {
+      if (disposed) return;
+      void invoke<void>("exec_resize", { session: channel, cols, rows }).catch(() => {});
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      unlisteners.forEach((u) => u());
+      void invoke<boolean>("exec_stop", { session: channel }).catch(() => {});
+    },
+  };
+}
+
 export const stopAllStreams = () => invoke<void>("stop_all_streams");
 
 /** Fires once at startup with the runtime auto-selection result. */

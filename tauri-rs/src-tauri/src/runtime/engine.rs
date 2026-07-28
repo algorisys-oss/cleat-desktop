@@ -9,7 +9,7 @@ use crate::model::{
     Container, CreateContainerRequest, Image, LogLine, Network, PortBinding, PullProgress,
     RuntimeKind, Stats, SystemSummary, Volume,
 };
-use crate::runtime::{LogStream, PullStream, StatsStream};
+use crate::runtime::{ExecAttach, LogStream, PullStream, StatsStream};
 use bollard::models::{
     ContainerCreateBody, EndpointSettings, HostConfig, NetworkCreateRequest, PortBinding as PB,
     RestartPolicy, RestartPolicyNameEnum, VolumeCreateRequest,
@@ -162,7 +162,12 @@ impl Engine {
         Ok(entries
             .iter()
             .map(|c| {
-                let str_at = |k: &str| c.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                let str_at = |k: &str| {
+                    c.get(k)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string()
+                };
 
                 let names: Vec<String> = c
                     .get("Names")
@@ -214,7 +219,10 @@ impl Engine {
                     names,
                     image: str_at("Image"),
                     image_id: str_at("ImageID"),
-                    command: c.get("Command").and_then(|v| v.as_str()).map(str::to_string),
+                    command: c
+                        .get("Command")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
                     created: c.get("Created").and_then(|v| v.as_i64()).unwrap_or(0),
                     state: crate::runtime::raw::normalize_state(
                         c.get("State").and_then(|v| v.as_str()).unwrap_or(""),
@@ -452,10 +460,13 @@ impl Engine {
             one_shot: false,
         };
         let id = id.to_string();
-        let stream = self.docker.stats(&id, Some(opts)).map(move |item| match item {
-            Ok(raw) => Ok(reduce_stats(&id, raw)),
-            Err(e) => Err(AppError::Engine(e)),
-        });
+        let stream = self
+            .docker
+            .stats(&id, Some(opts))
+            .map(move |item| match item {
+                Ok(raw) => Ok(reduce_stats(&id, raw)),
+                Err(e) => Err(AppError::Engine(e)),
+            });
         Ok(Box::pin(stream))
     }
 
@@ -470,7 +481,8 @@ impl Engine {
         Ok(images
             .into_iter()
             .map(|i| Image {
-                dangling: i.repo_tags.is_empty() || i.repo_tags == vec!["<none>:<none>".to_string()],
+                dangling: i.repo_tags.is_empty()
+                    || i.repo_tags == vec!["<none>:<none>".to_string()],
                 id: i.id,
                 repo_tags: i.repo_tags,
                 repo_digests: i.repo_digests,
@@ -675,21 +687,21 @@ impl Engine {
                 let mut containers = attached.get(&net_name).cloned().unwrap_or_default();
                 containers.sort();
                 Network {
-                id: n.id.unwrap_or_default(),
-                name: net_name,
-                driver: n.driver.unwrap_or_default(),
-                scope: n.scope.unwrap_or_default(),
-                internal: n.internal.unwrap_or(false),
-                attachable: n.attachable.unwrap_or(false),
-                created: n.created.map(|d| d.to_string()),
-                containers,
-                subnets: n
-                    .ipam
-                    .and_then(|i| i.config)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|c| c.subnet)
-                    .collect(),
+                    id: n.id.unwrap_or_default(),
+                    name: net_name,
+                    driver: n.driver.unwrap_or_default(),
+                    scope: n.scope.unwrap_or_default(),
+                    internal: n.internal.unwrap_or(false),
+                    attachable: n.attachable.unwrap_or(false),
+                    created: n.created.map(|d| d.to_string()),
+                    containers,
+                    subnets: n
+                        .ipam
+                        .and_then(|i| i.config)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(|c| c.subnet)
+                        .collect(),
                 }
             })
             .collect())
@@ -850,6 +862,118 @@ impl Engine {
             bollard::exec::StartExecResults::Detached => Ok(String::new()),
         }
     }
+
+    /// Attach an interactive TTY to a new process inside the container.
+    ///
+    /// `tty: true` matters for more than echo: it stops the daemon multiplexing
+    /// the response, so what comes back is the raw byte stream a terminal
+    /// emulator expects rather than 8-byte-framed stdout/stderr records.
+    pub async fn exec_start(
+        &self,
+        id: &str,
+        argv: Vec<String>,
+        cols: u16,
+        rows: u16,
+    ) -> AppResult<ExecAttach> {
+        if argv.is_empty() || argv.iter().all(|a| a.trim().is_empty()) {
+            return Err(AppError::Invalid("exec requires a command".into()));
+        }
+
+        let exec = self
+            .docker
+            .create_exec(
+                id,
+                bollard::exec::CreateExecOptions {
+                    cmd: Some(argv),
+                    attach_stdin: Some(true),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    tty: Some(true),
+                    // Without a TERM the shell assumes a dumb terminal and
+                    // emits no colour or cursor addressing at all.
+                    env: Some(vec!["TERM=xterm-256color".to_string()]),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let started = self
+            .docker
+            .start_exec(
+                &exec.id,
+                Some(bollard::exec::StartExecOptions {
+                    detach: false,
+                    tty: true,
+                    output_capacity: None,
+                }),
+            )
+            .await?;
+
+        match started {
+            bollard::exec::StartExecResults::Attached { output, input } => {
+                // The size can only be set once the process exists, so this is a
+                // second round trip rather than a create-time option. Failure is
+                // survivable — an 80x24 terminal is worse than a correct one but
+                // better than no session — so it must not abort the attach.
+                if let Err(e) = self.exec_resize(&exec.id, cols, rows).await {
+                    eprintln!(
+                        "cleat: initial exec resize failed ({e}); continuing at default size"
+                    );
+                }
+
+                let stream = output.map(|item| match item {
+                    Ok(out) => Ok(out.into_bytes()),
+                    Err(e) => Err(AppError::Engine(e)),
+                });
+
+                Ok(ExecAttach {
+                    exec_id: exec.id,
+                    output: Box::pin(stream),
+                    stdin: input,
+                })
+            }
+            // Only returned for detach:true, which we never ask for.
+            bollard::exec::StartExecResults::Detached => Err(AppError::Other(
+                "runtime started the exec process without attaching a terminal".into(),
+            )),
+        }
+    }
+
+    pub async fn exec_resize(&self, exec_id: &str, cols: u16, rows: u16) -> AppResult<()> {
+        self.docker
+            .resize_exec(
+                exec_id,
+                bollard::exec::ResizeExecOptions {
+                    height: rows.max(1),
+                    width: cols.max(1),
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Find an interactive shell that actually exists in this image.
+    ///
+    /// `/bin/bash` is absent from Alpine and most slim images, so defaulting to
+    /// it makes the terminal fail on a large share of real containers. The probe
+    /// is a fixed string with nothing interpolated into it.
+    pub async fn detect_shell(&self, id: &str) -> AppResult<String> {
+        const PROBE: &str = "command -v bash || command -v zsh || command -v ash || command -v sh";
+        let out = self
+            .exec_capture(id, vec!["/bin/sh".into(), "-c".into(), PROBE.into()])
+            .await
+            .unwrap_or_default();
+
+        let found = out
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with('/') && !l.contains(char::is_whitespace));
+
+        // A container with no `/bin/sh` at all (distroless) reaches here; hand
+        // back the conventional path so the caller surfaces the daemon's own
+        // "no such file" rather than a guess of our own.
+        Ok(found.unwrap_or("/bin/sh").to_string())
+    }
 }
 
 // ---------------------------------------------------------------- helpers
@@ -1008,7 +1132,9 @@ pub fn parse_systemctl_units(output: &str) -> Vec<(String, String)> {
 /// a second command.
 pub fn validate_service_name(name: &str) -> AppResult<()> {
     if name.is_empty() || name.len() > 128 {
-        return Err(AppError::Invalid("service name has an invalid length".into()));
+        return Err(AppError::Invalid(
+            "service name has an invalid length".into(),
+        ));
     }
     if !name
         .chars()

@@ -18,7 +18,7 @@ use crate::model::{
 use crate::runtime::compose;
 use crate::runtime::engine::{parse_systemctl_units, validate_service_name, Engine};
 use crate::runtime::{
-    ByteStream, ContainerRuntime, ImportStream, LogStream, PullStream, StatsStream,
+    ByteStream, ContainerRuntime, ExecAttach, ImportStream, LogStream, PullStream, StatsStream,
 };
 use async_trait::async_trait;
 use bollard::Docker;
@@ -75,7 +75,9 @@ fn podman_socket_path() -> AppResult<String> {
 /// `/proc/self` is owned by the running user, so its metadata carries the uid.
 fn current_uid() -> u32 {
     use std::os::unix::fs::MetadataExt;
-    std::fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(0)
+    std::fs::metadata("/proc/self")
+        .map(|m| m.uid())
+        .unwrap_or(0)
 }
 
 /// Connect to whichever Podman socket this system actually exposes.
@@ -222,7 +224,10 @@ impl ContainerRuntime for PodmanRuntime {
     }
 
     async fn pause_container(&self, id: &str) -> AppResult<()> {
-        self.engine.pause_container(id).await.map_err(annotate_pause)
+        self.engine
+            .pause_container(id)
+            .await
+            .map_err(annotate_pause)
     }
 
     async fn unpause_container(&self, id: &str) -> AppResult<()> {
@@ -258,6 +263,24 @@ impl ContainerRuntime for PodmanRuntime {
 
     async fn stream_stats(&self, id: &str) -> AppResult<StatsStream> {
         self.engine.stream_stats(id).await
+    }
+
+    async fn exec_start(
+        &self,
+        id: &str,
+        argv: Vec<String>,
+        cols: u16,
+        rows: u16,
+    ) -> AppResult<ExecAttach> {
+        self.engine.exec_start(id, argv, cols, rows).await
+    }
+
+    async fn exec_resize(&self, exec_id: &str, cols: u16, rows: u16) -> AppResult<()> {
+        self.engine.exec_resize(exec_id, cols, rows).await
+    }
+
+    async fn detect_shell(&self, id: &str) -> AppResult<String> {
+        self.engine.detect_shell(id).await
     }
 
     async fn list_container_services(&self, id: &str) -> AppResult<Vec<(String, String)>> {

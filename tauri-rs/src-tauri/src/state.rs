@@ -2,10 +2,11 @@
 
 use crate::error::{AppError, AppResult};
 use crate::model::RuntimeKind;
-use crate::runtime::{self, ContainerRuntime};
+use crate::runtime::{self, ContainerRuntime, ExecStdin};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::{Mutex, RwLock};
 
 /// Handle to a running stream task (log follow / stats), so the frontend can
 /// stop it when a modal closes instead of leaking a task per open-and-close.
@@ -13,11 +14,49 @@ pub struct StreamHandle {
     pub handle: tokio::task::JoinHandle<()>,
 }
 
+/// The write half of an interactive exec, parked between IPC calls.
+///
+/// Every other stream in the app is one-way and needs nothing kept alive but a
+/// `JoinHandle`. Exec is the exception: keystrokes arrive one command call at a
+/// time and each has to reach the same writer, so it lives here instead of
+/// inside the task that owns the output.
+pub struct ExecSession {
+    /// Resize is addressed by exec id, not by our session key.
+    pub exec_id: String,
+    stdin: Mutex<ExecStdin>,
+}
+
+/// Hand-written because the boxed writer is not `Debug`.
+impl std::fmt::Debug for ExecSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecSession")
+            .field("exec_id", &self.exec_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ExecSession {
+    /// Write keystrokes to the process.
+    ///
+    /// Flushing every time is deliberate. Interactive input is latency-bound,
+    /// not throughput-bound, and a buffered newline that never reaches the
+    /// shell reads to the user as a hung terminal.
+    pub async fn write(&self, data: &[u8]) -> AppResult<()> {
+        let mut stdin = self.stdin.lock().await;
+        stdin.write_all(data).await?;
+        stdin.flush().await?;
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 pub struct AppState {
     runtime: RwLock<Option<Arc<dyn ContainerRuntime>>>,
     /// Keyed by the event channel name the frontend listens on.
     streams: RwLock<HashMap<String, StreamHandle>>,
+    /// Interactive exec sessions, keyed by the same channel name as their
+    /// output task in `streams`.
+    execs: RwLock<HashMap<String, Arc<ExecSession>>>,
 }
 
 impl AppState {
@@ -86,5 +125,109 @@ impl AppState {
         for (_, s) in streams.drain() {
             s.handle.abort();
         }
+        // Exec sessions are registered in two places; dropping only the output
+        // task would strand its stdin writer here, holding an upgraded socket
+        // open against a runtime we are about to stop using.
+        self.execs.write().await.clear();
+    }
+
+    // ------------------------------------------------------------------ exec
+
+    pub async fn register_exec(&self, key: String, exec_id: String, stdin: ExecStdin) {
+        let session = Arc::new(ExecSession {
+            exec_id,
+            stdin: Mutex::new(stdin),
+        });
+        self.execs.write().await.insert(key, session);
+    }
+
+    /// Look up a live session. A miss means the terminal was closed, the
+    /// process exited, or the runtime was switched underneath it.
+    pub async fn exec(&self, key: &str) -> AppResult<Arc<ExecSession>> {
+        self.execs
+            .read()
+            .await
+            .get(key)
+            .cloned()
+            .ok_or_else(|| AppError::NotFound(format!("no exec session '{key}'")))
+    }
+
+    /// Drop the session and abort the task pumping its output.
+    pub async fn stop_exec(&self, key: &str) -> bool {
+        let had_session = self.execs.write().await.remove(key).is_some();
+        let had_stream = self.stop_stream(&format!("exec:{key}")).await;
+        had_session || had_stream
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    /// A session whose stdin is one end of a duplex pipe, so the test can read
+    /// back exactly what a caller wrote.
+    async fn session_with_pipe(state: &AppState, key: &str) -> tokio::io::DuplexStream {
+        let (ours, theirs) = tokio::io::duplex(1024);
+        state
+            .register_exec(key.to_string(), format!("exec-{key}"), Box::pin(theirs))
+            .await;
+        ours
+    }
+
+    #[tokio::test]
+    async fn write_reaches_the_process_verbatim() {
+        let state = AppState::new();
+        let mut pipe = session_with_pipe(&state, "chan-1").await;
+
+        // Includes a multi-byte character and a control byte: nothing in the
+        // path may re-encode or line-buffer this.
+        let payload = "echo café\r\x03".as_bytes();
+        state
+            .exec("chan-1")
+            .await
+            .unwrap()
+            .write(payload)
+            .await
+            .unwrap();
+
+        let mut buf = vec![0u8; payload.len()];
+        pipe.read_exact(&mut buf).await.unwrap();
+        assert_eq!(buf, payload);
+    }
+
+    #[tokio::test]
+    async fn unknown_session_is_not_found() {
+        let state = AppState::new();
+        let err = state.exec("no-such-channel").await.unwrap_err();
+        assert_eq!(err.kind(), "not_found");
+    }
+
+    #[tokio::test]
+    async fn stop_exec_drops_the_session() {
+        let state = AppState::new();
+        let _pipe = session_with_pipe(&state, "chan-2").await;
+
+        assert!(state.stop_exec("chan-2").await, "first stop should find it");
+        assert!(
+            state.exec("chan-2").await.is_err(),
+            "session should be gone"
+        );
+        assert!(!state.stop_exec("chan-2").await, "second stop is a no-op");
+    }
+
+    /// Switching runtimes calls `stop_all_streams`. Before exec, that only had
+    /// to abort tasks; now it must also drop stdin writers, or each switch
+    /// strands an upgraded socket against the runtime being abandoned.
+    #[tokio::test]
+    async fn stop_all_streams_clears_exec_sessions() {
+        let state = AppState::new();
+        let _a = session_with_pipe(&state, "chan-3").await;
+        let _b = session_with_pipe(&state, "chan-4").await;
+
+        state.stop_all_streams().await;
+
+        assert!(state.exec("chan-3").await.is_err());
+        assert!(state.exec("chan-4").await.is_err());
     }
 }
