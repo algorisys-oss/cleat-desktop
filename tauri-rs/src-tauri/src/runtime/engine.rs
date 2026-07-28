@@ -722,8 +722,35 @@ impl Engine {
             internal: Some(internal),
             ..Default::default()
         };
-        let res = self.docker.create_network(req).await?;
-        Ok(res.id)
+        match self.docker.create_network(req).await {
+            Ok(res) => Ok(res.id),
+
+            // Podman 3.x answers `{"Id":"…","Warning":null}`, and bollard types
+            // `Warning` as `String` rather than `Option<String>`, so serde
+            // rejects it. The network was created regardless — only the reply
+            // failed to parse — so failing here would report a phantom error
+            // and leave a real network behind.
+            //
+            // Same shape of divergence as the container-state fallback in
+            // `list_containers`: recover the value from a second call rather
+            // than pretending the operation failed.
+            Err(bollard::errors::Error::JsonDataError { .. }) => {
+                let created = self
+                    .list_networks()
+                    .await?
+                    .into_iter()
+                    .find(|n| n.name == name)
+                    .ok_or_else(|| {
+                        AppError::Other(format!(
+                            "runtime rejected the create-network response and no network named \
+                             '{name}' exists afterwards"
+                        ))
+                    })?;
+                Ok(created.id)
+            }
+
+            Err(e) => Err(AppError::Engine(e)),
+        }
     }
 
     pub async fn remove_network(&self, id: &str) -> AppResult<()> {

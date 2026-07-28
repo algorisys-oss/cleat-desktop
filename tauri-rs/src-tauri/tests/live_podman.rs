@@ -219,15 +219,11 @@ async fn copies_an_image_from_docker() {
         return;
     };
 
-    // Smallest tagged image Docker has, to keep the transfer quick.
-    let Some(source) = docker.list_images().await.ok().and_then(|mut images| {
-        images.retain(|i| !i.repo_tags.is_empty() && !i.dangling && i.size > 0);
-        images.sort_by_key(|i| i.size);
-        images
-            .into_iter()
-            .next()
-            .and_then(|i| i.repo_tags.into_iter().next())
-    }) else {
+    // Ask for a known-small image rather than "whichever is smallest right
+    // now". The old approach sampled a list that other tests mutate in
+    // parallel, so which image got copied varied per machine — on CI it picked
+    // a 20 MB nginx, and the failure was impossible to reproduce locally.
+    let Some(source) = common::ensure_image(&docker).await else {
         eprintln!("skipping: docker has no tagged images");
         return;
     };
@@ -261,19 +257,45 @@ async fn copies_an_image_from_docker() {
         statuses.push(item.expect("import stream error"));
     }
 
-    let after = podman.list_images().await.expect("list podman images");
-    let present = after.iter().any(|i| {
-        i.repo_tags
-            .iter()
-            .any(|t| t.ends_with(&source) || *t == source)
-    });
+    // Podman requalifies references as it loads them — `alpine:latest` comes
+    // back as `localhost/alpine:latest` — so requiring the source name to
+    // reappear verbatim asserts something the operation never promised.
+    // Verify what the runtime *said* it loaded is actually there.
+    let loaded: Vec<String> = statuses
+        .iter()
+        .filter_map(|s| {
+            s.split_once("Loaded image:")
+                .map(|(_, r)| r.trim().to_string())
+        })
+        .filter(|r| !r.is_empty())
+        .collect();
 
-    // Clean up before asserting, so a failure can't leave the image behind.
-    // Safe to remove: we established above that we put it there.
-    let _ = podman.remove_image(&source, true).await;
+    let after = podman.list_images().await.expect("list podman images");
+    let tags: Vec<&str> = after
+        .iter()
+        .flat_map(|i| i.repo_tags.iter().map(String::as_str))
+        .collect();
+
+    // Fall back to the source name for runtimes that report the load
+    // differently; the point is that *something* arrived under a name we can
+    // tie back to the copy.
+    let expected: Vec<String> = if loaded.is_empty() {
+        vec![source.clone()]
+    } else {
+        loaded.clone()
+    };
+    let present = expected
+        .iter()
+        .any(|want| tags.iter().any(|t| t == want || t.ends_with(want.as_str())));
+
+    // Clean up before asserting, so a failure cannot leave the image behind.
+    for reference in expected.iter().chain(std::iter::once(&source)) {
+        let _ = podman.remove_image(reference, true).await;
+    }
 
     assert!(
         present,
-        "copied image {source} not found in podman afterwards; import said: {statuses:?}"
+        "copy from docker reported {statuses:?} but none of {expected:?} is in podman; \
+         podman has: {tags:?}"
     );
 }

@@ -40,17 +40,67 @@ pub const FALLBACK_IMAGE: &str = "alpine:latest";
 /// Prefers whatever is already present so the suite normally touches no
 /// network; returns None (test skips) if the store is empty *and* the pull
 /// fails, which is what happens on an offline machine.
+/// Does `tag` name the repository `repo`, ignoring registry and version?
+///
+/// Substring matching was wrong in a way that only showed up on CI: `"alpine"`
+/// is a substring of `"nginx:alpine"`, so asking for the smallest image could
+/// hand back a 20 MB nginx. Compare the repository component instead, allowing
+/// for the registry prefix Podman adds (`docker.io/library/alpine:latest`).
+fn repo_matches(tag: &str, repo: &str) -> bool {
+    if tag.contains("<none>") {
+        return false;
+    }
+    // Strip the tag/digest, being careful that a registry may carry a port.
+    let name = match tag.rsplit_once(':') {
+        Some((left, right)) if !right.contains('/') => left,
+        _ => tag,
+    };
+    let last = name.rsplit('/').next().unwrap_or(name);
+    last == repo
+}
+
+#[cfg(test)]
+mod repo_matches_tests {
+    use super::repo_matches;
+
+    #[test]
+    fn matches_plain_and_qualified_names() {
+        assert!(repo_matches("alpine:latest", "alpine"));
+        assert!(repo_matches("docker.io/library/alpine:latest", "alpine"));
+        assert!(repo_matches("localhost/alpine:latest", "alpine"));
+        assert!(repo_matches("alpine", "alpine"));
+    }
+
+    /// The CI failure: "alpine" is a substring of "nginx:alpine", so the old
+    /// check handed back nginx when asked for the smallest image.
+    #[test]
+    fn does_not_match_a_tag_that_merely_contains_the_name() {
+        assert!(!repo_matches("nginx:alpine", "alpine"));
+        assert!(!repo_matches("docker.io/library/nginx:alpine", "alpine"));
+        assert!(!repo_matches("alpine-extras:latest", "alpine"));
+        assert!(!repo_matches("myalpine:latest", "alpine"));
+    }
+
+    #[test]
+    fn ignores_untagged_images() {
+        assert!(!repo_matches("<none>:<none>", "alpine"));
+    }
+
+    /// A registry may carry a port, which must not be mistaken for the tag.
+    #[test]
+    fn tolerates_a_registry_port() {
+        assert!(repo_matches("registry:5000/alpine:latest", "alpine"));
+        assert!(repo_matches("registry:5000/alpine", "alpine"));
+    }
+}
+
 pub async fn ensure_image(rt: &dyn ContainerRuntime) -> Option<String> {
     if let Ok(images) = rt.list_images().await {
         for preferred in ["alpine", "busybox", "nginx"] {
             if let Some(tag) = images.iter().find_map(|i| {
                 i.repo_tags
                     .iter()
-                    // `contains`, not `starts_with`: Podman fully-qualifies tags
-                    // as `docker.io/library/alpine:latest`, so a prefix match
-                    // silently fell through to "any image" — which could be one
-                    // another test was about to delete.
-                    .find(|t| t.contains(preferred) && !t.contains("<none>"))
+                    .find(|t| repo_matches(t, preferred))
                     .cloned()
             }) {
                 return Some(tag);
