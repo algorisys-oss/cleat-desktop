@@ -82,18 +82,29 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `binary` is where cargo leaves the bare executable and `asset` is
+          # what it is called on the release. Passing --target moves the output
+          # under a triple-named directory, which is why the macOS paths differ.
           - platform: ubuntu-22.04
             label: Linux (deb/rpm/AppImage)
             args: ""
+            binary: tauri-rs/src-tauri/target/release/cleat
+            asset: cleat-linux-x86_64
           - platform: macos-latest
             label: macOS (Apple silicon)
             args: "--target aarch64-apple-darwin"
+            binary: tauri-rs/src-tauri/target/aarch64-apple-darwin/release/cleat
+            asset: cleat-macos-aarch64
           - platform: macos-13
             label: macOS (Intel)
             args: "--target x86_64-apple-darwin"
+            binary: tauri-rs/src-tauri/target/x86_64-apple-darwin/release/cleat
+            asset: cleat-macos-x86_64
           - platform: windows-latest
             label: Windows (msi/exe)
             args: ""
+            binary: tauri-rs/src-tauri/target/release/cleat.exe
+            asset: cleat-windows-x86_64.exe
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -144,6 +155,12 @@ jobs:
             `.deb` or `.rpm` (small — they link the system WebKitGTK) or the
             `.AppImage` (large, self-contained, no install step).
 
+            The `cleat-*` files are the bare executables, for running without
+            installing anything. They need the WebKitGTK runtime already present
+            on the machine, so on a clean box prefer a package or the AppImage.
+            On Linux and macOS you will need `chmod +x` — GitHub does not
+            preserve the executable bit on release assets.
+
             **These builds are not code-signed.** macOS Gatekeeper will need
             `xattr -dr com.apple.quarantine /Applications/Cleat.app`, and
             Windows SmartScreen will warn on first run.
@@ -155,3 +172,27 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+      # tauri-action uploads the *bundles* only. The bare executable is a
+      # separate artifact people genuinely want — for a machine that already has
+      # the WebKitGTK runtime, or for dropping on a box without installing a
+      # package — so it is attached here.
+      #
+      # The step above has already created-or-reused the release by this point,
+      # so there is no race between matrix jobs; each uploads a distinctly named
+      # asset. --clobber makes a re-run of the same tag idempotent.
+      - name: Attach the bare executable
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "${{ matrix.binary }}" ]; then
+            echo "::error::expected binary at ${{ matrix.binary }} but it is not there"
+            find tauri-rs/src-tauri/target -maxdepth 3 -name 'cleat*' -type f || true
+            exit 1
+          fi
+          cp "${{ matrix.binary }}" "${{ matrix.asset }}"
+          gh release upload "$TAG" "${{ matrix.asset }}" --clobber --repo "$GITHUB_REPOSITORY"
+          echo "uploaded ${{ matrix.asset }} ($(du -h "${{ matrix.asset }}" | cut -f1))"

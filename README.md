@@ -96,6 +96,11 @@ Prebuilt executables for Linux, macOS and Windows are published to
 `.rpm` and `.AppImage` for Linux, `.dmg` for both Apple silicon and Intel, and
 `.msi`/`.exe` for Windows.
 
+The `cleat-*` assets are the bare executables, for running without installing
+anything. They need the WebKitGTK runtime already on the machine, so on a clean
+box prefer a package or the AppImage. On Linux and macOS `chmod +x` them first —
+GitHub does not preserve the executable bit on release assets.
+
 They are **not code-signed**. macOS needs
 `xattr -dr com.apple.quarantine /Applications/Cleat.app` after installing, and
 Windows SmartScreen warns on first run.
