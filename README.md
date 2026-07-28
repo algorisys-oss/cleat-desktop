@@ -71,17 +71,21 @@ npm run tauri dev
 > undefined symbol: __libc_pthread_init, version GLIBC_PRIVATE
 > ```
 >
-> The terminal exports GTK/GIO/loader paths pointing into the snap, so the app
-> pulls in the snap's older glibc. `dev-start.sh` detects and strips them
-> automatically. If you invoke `npm run tauri dev` (or the built binary)
-> yourself, clear them first:
+> `GTK_PATH` is the culprit: it points into the snap, GTK loads its modules from
+> there, and those pull in the snap's older glibc. Note that `$SNAP` and
+> `LD_LIBRARY_PATH` may both be *unset* while this still happens, so neither is a
+> reliable thing to test for.
+>
+> `dev-start.sh` detects and strips these automatically. If you invoke
+> `npm run tauri dev` (or the built binary) yourself, clear them first:
 >
 > ```sh
-> unset LD_LIBRARY_PATH LD_PRELOAD GTK_PATH GTK_EXE_PREFIX GIO_MODULE_DIR
-> unset GDK_PIXBUF_MODULE_FILE GSETTINGS_SCHEMA_DIR LOCPATH
+> unset LD_LIBRARY_PATH LD_PRELOAD GTK_PATH GTK_EXE_PREFIX GTK_IM_MODULE_FILE
+> unset GIO_MODULE_DIR GDK_PIXBUF_MODULE_FILE GDK_PIXBUF_MODULEDIR
+> unset GSETTINGS_SCHEMA_DIR LOCPATH
 > ```
 >
-> Launching from a normal terminal avoids it entirely.
+> Launching from a normal (non-snap) terminal avoids it entirely.
 
 ## Building a production executable
 

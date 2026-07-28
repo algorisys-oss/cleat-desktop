@@ -46,26 +46,31 @@ Scaffold it once with:
 Then re-run this script."
 fi
 
-# Snap-confined terminals (e.g. the VS Code snap) export a library path into
-# /snap/core*/lib. The Tauri binary then loads the snap's older glibc and dies
-# with "undefined symbol: __libc_pthread_init, version GLIBC_PRIVATE". Drop
-# those before launching.
+# Snap-confined terminals (e.g. the VS Code snap) export toolkit paths that
+# point inside the snap. GTK then loads its modules from
+# /snap/<app>/…/gtk-3.0, those drag in the snap's older glibc, and the app dies
+# before painting:
 #
-# Checked two ways because either alone has a hole: $SNAP identifies the common
-# case, but a terminal can scrub it while still exporting snap loader paths, and
-# that fails identically with the guard silently doing nothing.
-snap_reason=""
-case ":${LD_LIBRARY_PATH:-}:${LD_PRELOAD:-}:" in
-  *:/snap/*) snap_reason="snap paths in LD_LIBRARY_PATH/LD_PRELOAD" ;;
-esac
-if [ -z "$snap_reason" ] && [ -n "${SNAP:-}" ]; then
-  snap_reason="\$SNAP=$SNAP"
-fi
+#   symbol lookup error: /snap/core20/…/libpthread.so.0:
+#   undefined symbol: __libc_pthread_init, version GLIBC_PRIVATE
+#
+# GTK_PATH is the actual trigger — bisected against the other candidates:
+# clearing it alone is sufficient, and clearing LOCPATH, GIO_MODULE_DIR or the
+# GDK_PIXBUF_* vars alone is not. The rest are cleared anyway because they point
+# at snap-built modules with the same defect via other load paths.
+#
+# Detection scans the environment for /snap/ instead of keying on $SNAP or
+# LD_LIBRARY_PATH. Both of those have holes: a terminal can export GTK_PATH
+# while scrubbing $SNAP and never setting LD_LIBRARY_PATH, and then the guard
+# silently does nothing and the launch fails exactly as before.
+SNAP_LEAK_VARS='LD_LIBRARY_PATH|LD_PRELOAD|GTK_PATH|GTK_EXE_PREFIX|GTK_IM_MODULE_FILE|GIO_MODULE_DIR|GDK_PIXBUF_MODULE_FILE|GDK_PIXBUF_MODULEDIR|GSETTINGS_SCHEMA_DIR|LOCPATH'
+snap_leaks="$(env | grep -E "^($SNAP_LEAK_VARS)=.*/snap/" | cut -d= -f1 | sort -u | tr '\n' ' ' || true)"
 
-if [ -n "$snap_reason" ]; then
-  warn "snap environment detected ($snap_reason); clearing its library paths"
-  unset LD_LIBRARY_PATH LD_PRELOAD GTK_PATH GTK_EXE_PREFIX GIO_MODULE_DIR
-  unset GDK_PIXBUF_MODULE_FILE GSETTINGS_SCHEMA_DIR LOCPATH
+if [ -n "${snap_leaks% }" ] || [ -n "${SNAP:-}" ]; then
+  warn "snap environment detected (${snap_leaks:-\$SNAP=$SNAP}); clearing its toolkit and library paths"
+  unset LD_LIBRARY_PATH LD_PRELOAD GTK_PATH GTK_EXE_PREFIX GTK_IM_MODULE_FILE
+  unset GIO_MODULE_DIR GDK_PIXBUF_MODULE_FILE GDK_PIXBUF_MODULEDIR
+  unset GSETTINGS_SCHEMA_DIR LOCPATH
 fi
 
 cd "$APP_DIR"
