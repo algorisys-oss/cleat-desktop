@@ -1,7 +1,7 @@
 {
   "name": "cleat",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Container management for Docker and Podman",
   "license": "MIT",
   "author": "Rajesh Pillai",
