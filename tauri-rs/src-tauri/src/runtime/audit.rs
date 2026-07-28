@@ -11,17 +11,20 @@
 //! leaves nowhere to bypass. `AppState::select_runtime` is the single place a
 //! runtime is constructed, and it wraps unconditionally.
 //!
-//! # What `detail` is, and what it is not
+//! # What `requests` is, and what it is not
 //!
 //! Cleat talks to the Engine API, not the `docker` CLI. There is no shell
 //! command behind `start_container` to reveal — it is `POST
-//! /containers/{id}/start` over a unix socket. `detail` reports that.
+//! /containers/{id}/start` over a unix socket. `requests` reports that.
 //!
-//! The method-and-path strings here are authored per operation, so they are a
-//! description rather than a capture. What *cannot* drift is the set of
-//! operations, their arguments, timing and outcome: those come from the call
-//! itself. Compose is the exception where the recorded value is literally the
-//! executed argv, because compose is a real subprocess.
+//! Nothing here is authored. The lines are captured off the wire as the request
+//! is built ([`crate::runtime::wire`]), so they cannot drift from what was
+//! actually sent, and an operation that issues three requests shows three —
+//! `exec_start` does, which the string it replaced got wrong. Compose
+//! is the exception: [`record_argv`](AuditRuntime::record_argv) takes the
+//! executed argv, because compose is a real subprocess and there the command is
+//! the truth. It still captures alongside, so a compose path that somehow
+//! reached the API would show it rather than hide it.
 
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -29,8 +32,8 @@ use crate::model::{
     RuntimeKind, Stats, SystemSummary, Volume,
 };
 use crate::runtime::{
-    compose, ByteStream, ComposeAction, ContainerRuntime, ExecAttach, ImportStream, LogStream,
-    PullStream, StatsStream,
+    compose, wire, ByteStream, ComposeAction, ContainerRuntime, ExecAttach, ImportStream,
+    LogStream, PullStream, StatsStream,
 };
 use async_trait::async_trait;
 use std::collections::VecDeque;
@@ -121,16 +124,18 @@ impl AuditRuntime {
         Self { inner, log }
     }
 
-    /// Run `f`, timing it and recording the outcome.
+    /// Run `f`, timing it and recording the outcome and the requests it issued.
     ///
     /// Takes the future rather than a closure so each trait method stays a
     /// single readable line, and so there is no way to record an operation
     /// without actually performing it.
+    ///
+    /// There is deliberately no parameter for the request line: it is captured,
+    /// not described, and an authored one could disagree with the wire.
     async fn record<T, F>(
         &self,
         op: &str,
         kind: OpKind,
-        detail: String,
         args: Vec<(String, String)>,
         f: F,
     ) -> AppResult<T>
@@ -138,8 +143,43 @@ impl AuditRuntime {
         F: Future<Output = AppResult<T>>,
     {
         let started = Instant::now();
-        let result = f.await;
+        let (result, requests) = wire::capture(f).await;
+        self.push(op, kind, requests, args, started, &result);
+        result
+    }
 
+    /// As [`record`](Self::record), for the compose subprocess.
+    ///
+    /// `argv` is what was executed, so it leads. Capture still runs: if a
+    /// compose path ever issues an API request, it belongs on screen rather
+    /// than in the gap between the two mechanisms.
+    async fn record_argv<T, F>(
+        &self,
+        op: &str,
+        kind: OpKind,
+        argv: String,
+        args: Vec<(String, String)>,
+        f: F,
+    ) -> AppResult<T>
+    where
+        F: Future<Output = AppResult<T>>,
+    {
+        let started = Instant::now();
+        let (result, mut requests) = wire::capture(f).await;
+        requests.insert(0, argv);
+        self.push(op, kind, requests, args, started, &result);
+        result
+    }
+
+    fn push<T>(
+        &self,
+        op: &str,
+        kind: OpKind,
+        requests: Vec<String>,
+        args: Vec<(String, String)>,
+        started: Instant,
+        result: &AppResult<T>,
+    ) {
         self.log.push(ActivityEntry {
             seq: self.log.seq.fetch_add(1, Ordering::Relaxed),
             at: SystemTime::now()
@@ -149,13 +189,11 @@ impl AuditRuntime {
             runtime: self.inner.kind(),
             op: op.to_string(),
             kind,
-            detail,
+            requests,
             args,
             duration_ms: started.elapsed().as_millis() as u64,
             error: result.as_ref().err().map(AppError::message),
         });
-
-        result
     }
 }
 
@@ -179,14 +217,8 @@ impl ContainerRuntime for AuditRuntime {
     // -- system ------------------------------------------------------------
 
     async fn system_summary(&self) -> AppResult<SystemSummary> {
-        self.record(
-            "system_summary",
-            Read,
-            "GET /version + GET /info".into(),
-            vec![],
-            self.inner.system_summary(),
-        )
-        .await
+        self.record("system_summary", Read, vec![], self.inner.system_summary())
+            .await
     }
 
     // -- containers --------------------------------------------------------
@@ -195,7 +227,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "list_containers",
             Read,
-            format!("GET /containers/json?all={all}"),
             vec![],
             self.inner.list_containers(all),
         )
@@ -206,7 +237,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "inspect_container",
             Read,
-            format!("GET /containers/{id}/json"),
             vec![],
             self.inner.inspect_container(id),
         )
@@ -217,7 +247,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "start_container",
             Write,
-            format!("POST /containers/{id}/start"),
             vec![],
             self.inner.start_container(id),
         )
@@ -228,7 +257,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "stop_container",
             Write,
-            format!("POST /containers/{id}/stop"),
             vec![],
             self.inner.stop_container(id),
         )
@@ -239,7 +267,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "restart_container",
             Write,
-            format!("POST /containers/{id}/restart"),
             vec![],
             self.inner.restart_container(id),
         )
@@ -250,7 +277,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "pause_container",
             Write,
-            format!("POST /containers/{id}/pause"),
             vec![],
             self.inner.pause_container(id),
         )
@@ -261,7 +287,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "unpause_container",
             Write,
-            format!("POST /containers/{id}/unpause"),
             vec![],
             self.inner.unpause_container(id),
         )
@@ -272,7 +297,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "remove_container",
             Write,
-            format!("DELETE /containers/{id}?force={force}&v={volumes}"),
             vec![],
             self.inner.remove_container(id, force, volumes),
         )
@@ -282,15 +306,15 @@ impl ContainerRuntime for AuditRuntime {
     async fn create_container(&self, req: CreateContainerRequest) -> AppResult<String> {
         // The most detailed entry in the log, because it is the operation with
         // the most ways to be surprising after the fact.
-        let mut detail = args([
+        let mut shown = args([
             ("image", req.image.clone()),
             ("name", req.name.clone().unwrap_or_else(|| "(auto)".into())),
         ]);
         if !req.ports.is_empty() {
-            detail.push(("ports".into(), req.ports.join(", ")));
+            shown.push(("ports".into(), req.ports.join(", ")));
         }
         if !req.env.is_empty() {
-            detail.push((
+            shown.push((
                 "env".into(),
                 req.env
                     .iter()
@@ -300,30 +324,25 @@ impl ContainerRuntime for AuditRuntime {
             ));
         }
         if !req.volumes.is_empty() {
-            detail.push(("volumes".into(), req.volumes.join(", ")));
+            shown.push(("volumes".into(), req.volumes.join(", ")));
         }
         if let Some(net) = &req.network {
-            detail.push(("network".into(), net.clone()));
+            shown.push(("network".into(), net.clone()));
         }
         if !req.command.is_empty() {
-            detail.push(("command".into(), format!("{:?}", req.command)));
+            shown.push(("command".into(), format!("{:?}", req.command)));
         }
         if req.auto_remove {
-            detail.push(("autoRemove".into(), "true".into()));
+            shown.push(("autoRemove".into(), "true".into()));
         }
         if let Some(p) = &req.restart_policy {
-            detail.push(("restartPolicy".into(), p.clone()));
+            shown.push(("restartPolicy".into(), p.clone()));
         }
 
-        let path = match &req.name {
-            Some(n) => format!("POST /containers/create?name={n}"),
-            None => "POST /containers/create".to_string(),
-        };
         self.record(
             "create_container",
             Write,
-            path,
-            detail,
+            shown,
             self.inner.create_container(req),
         )
         .await
@@ -333,7 +352,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "container_health",
             Read,
-            format!("GET /containers/{id}/json"),
             vec![],
             self.inner.container_health(id),
         )
@@ -344,7 +362,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "container_logs",
             Read,
-            format!("GET /containers/{id}/logs?tail={tail}&timestamps={timestamps}"),
             vec![],
             self.inner.container_logs(id, tail, timestamps),
         )
@@ -357,7 +374,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "follow_logs",
             Read,
-            format!("GET /containers/{id}/logs?follow=true&tail={tail}"),
             vec![],
             self.inner.follow_logs(id, tail),
         )
@@ -368,7 +384,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "container_stats",
             Read,
-            format!("GET /containers/{id}/stats?stream=false"),
             vec![],
             self.inner.container_stats(id),
         )
@@ -376,14 +391,8 @@ impl ContainerRuntime for AuditRuntime {
     }
 
     async fn stream_stats(&self, id: &str) -> AppResult<StatsStream> {
-        self.record(
-            "stream_stats",
-            Read,
-            format!("GET /containers/{id}/stats?stream=true"),
-            vec![],
-            self.inner.stream_stats(id),
-        )
-        .await
+        self.record("stream_stats", Read, vec![], self.inner.stream_stats(id))
+            .await
     }
 
     async fn exec_start(
@@ -400,7 +409,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "exec_start",
             Write,
-            format!("POST /containers/{id}/exec + POST /exec/{{id}}/start"),
             shown,
             self.inner.exec_start(id, argv, cols, rows),
         )
@@ -413,7 +421,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "exec_resize",
             Read,
-            format!("POST /exec/{exec_id}/resize?w={cols}&h={rows}"),
             vec![],
             self.inner.exec_resize(exec_id, cols, rows),
         )
@@ -421,21 +428,14 @@ impl ContainerRuntime for AuditRuntime {
     }
 
     async fn detect_shell(&self, id: &str) -> AppResult<String> {
-        self.record(
-            "detect_shell",
-            Read,
-            format!("POST /containers/{id}/exec (probe for a shell)"),
-            vec![],
-            self.inner.detect_shell(id),
-        )
-        .await
+        self.record("detect_shell", Read, vec![], self.inner.detect_shell(id))
+            .await
     }
 
     async fn list_container_services(&self, id: &str) -> AppResult<Vec<(String, String)>> {
         self.record(
             "list_container_services",
             Read,
-            format!("POST /containers/{id}/exec [systemctl list-units]"),
             vec![],
             self.inner.list_container_services(id),
         )
@@ -455,7 +455,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "control_container_service",
             Write,
-            format!("POST /containers/{id}/exec [systemctl {action} {service}]"),
             shown,
             self.inner.control_container_service(id, service, action),
         )
@@ -465,32 +464,19 @@ impl ContainerRuntime for AuditRuntime {
     // -- images ------------------------------------------------------------
 
     async fn list_images(&self) -> AppResult<Vec<Image>> {
-        self.record(
-            "list_images",
-            Read,
-            "GET /images/json".into(),
-            vec![],
-            self.inner.list_images(),
-        )
-        .await
+        self.record("list_images", Read, vec![], self.inner.list_images())
+            .await
     }
 
     async fn pull_image(&self, image: &str) -> AppResult<PullStream> {
-        self.record(
-            "pull_image",
-            Write,
-            format!("POST /images/create?fromImage={image}"),
-            vec![],
-            self.inner.pull_image(image),
-        )
-        .await
+        self.record("pull_image", Write, vec![], self.inner.pull_image(image))
+            .await
     }
 
     async fn remove_image(&self, id: &str, force: bool) -> AppResult<()> {
         self.record(
             "remove_image",
             Write,
-            format!("DELETE /images/{id}?force={force}"),
             vec![],
             self.inner.remove_image(id, force),
         )
@@ -498,43 +484,24 @@ impl ContainerRuntime for AuditRuntime {
     }
 
     async fn image_history(&self, id: &str) -> AppResult<serde_json::Value> {
-        self.record(
-            "image_history",
-            Read,
-            format!("GET /images/{id}/history"),
-            vec![],
-            self.inner.image_history(id),
-        )
-        .await
+        self.record("image_history", Read, vec![], self.inner.image_history(id))
+            .await
     }
 
     async fn inspect_image(&self, id: &str) -> AppResult<serde_json::Value> {
-        self.record(
-            "inspect_image",
-            Read,
-            format!("GET /images/{id}/json"),
-            vec![],
-            self.inner.inspect_image(id),
-        )
-        .await
+        self.record("inspect_image", Read, vec![], self.inner.inspect_image(id))
+            .await
     }
 
     async fn prune_images(&self) -> AppResult<u64> {
-        self.record(
-            "prune_images",
-            Write,
-            "POST /images/prune".into(),
-            vec![],
-            self.inner.prune_images(),
-        )
-        .await
+        self.record("prune_images", Write, vec![], self.inner.prune_images())
+            .await
     }
 
     async fn export_image(&self, reference: &str) -> AppResult<ByteStream> {
         self.record(
             "export_image",
             Read,
-            format!("GET /images/{reference}/get"),
             vec![],
             self.inner.export_image(reference),
         )
@@ -542,27 +509,15 @@ impl ContainerRuntime for AuditRuntime {
     }
 
     async fn import_image(&self, tar: ByteStream) -> AppResult<ImportStream> {
-        self.record(
-            "import_image",
-            Write,
-            "POST /images/load".into(),
-            vec![],
-            self.inner.import_image(tar),
-        )
-        .await
+        self.record("import_image", Write, vec![], self.inner.import_image(tar))
+            .await
     }
 
     // -- networks ----------------------------------------------------------
 
     async fn list_networks(&self) -> AppResult<Vec<Network>> {
-        self.record(
-            "list_networks",
-            Read,
-            "GET /networks".into(),
-            vec![],
-            self.inner.list_networks(),
-        )
-        .await
+        self.record("list_networks", Read, vec![], self.inner.list_networks())
+            .await
     }
 
     async fn create_network(&self, name: &str, driver: &str, internal: bool) -> AppResult<String> {
@@ -574,7 +529,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "create_network",
             Write,
-            "POST /networks/create".into(),
             shown,
             self.inner.create_network(name, driver, internal),
         )
@@ -585,7 +539,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "remove_network",
             Write,
-            format!("DELETE /networks/{id}"),
             vec![],
             self.inner.remove_network(id),
         )
@@ -596,7 +549,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "inspect_network",
             Read,
-            format!("GET /networks/{id}"),
             vec![],
             self.inner.inspect_network(id),
         )
@@ -608,7 +560,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "connect_network",
             Write,
-            format!("POST /networks/{network}/connect"),
             shown,
             self.inner.connect_network(network, container),
         )
@@ -620,7 +571,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "disconnect_network",
             Write,
-            format!("POST /networks/{network}/disconnect"),
             shown,
             self.inner.disconnect_network(network, container),
         )
@@ -630,14 +580,8 @@ impl ContainerRuntime for AuditRuntime {
     // -- volumes -----------------------------------------------------------
 
     async fn list_volumes(&self) -> AppResult<Vec<Volume>> {
-        self.record(
-            "list_volumes",
-            Read,
-            "GET /volumes".into(),
-            vec![],
-            self.inner.list_volumes(),
-        )
-        .await
+        self.record("list_volumes", Read, vec![], self.inner.list_volumes())
+            .await
     }
 
     async fn create_volume(&self, name: &str, driver: Option<&str>) -> AppResult<Volume> {
@@ -648,7 +592,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "create_volume",
             Write,
-            "POST /volumes/create".into(),
             shown,
             self.inner.create_volume(name, driver),
         )
@@ -659,7 +602,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "remove_volume",
             Write,
-            format!("DELETE /volumes/{name}?force={force}"),
             vec![],
             self.inner.remove_volume(name, force),
         )
@@ -670,7 +612,6 @@ impl ContainerRuntime for AuditRuntime {
         self.record(
             "inspect_volume",
             Read,
-            format!("GET /volumes/{name}"),
             vec![],
             self.inner.inspect_volume(name),
         )
@@ -678,24 +619,19 @@ impl ContainerRuntime for AuditRuntime {
     }
 
     async fn prune_volumes(&self) -> AppResult<u64> {
-        self.record(
-            "prune_volumes",
-            Write,
-            "POST /volumes/prune".into(),
-            vec![],
-            self.inner.prune_volumes(),
-        )
-        .await
+        self.record("prune_volumes", Write, vec![], self.inner.prune_volumes())
+            .await
     }
 
     // -- compose -----------------------------------------------------------
     //
-    // The only operations where the recorded string is literally the command
-    // executed, because compose is the one remaining subprocess.
+    // The only operations that pass a command in rather than capturing one,
+    // because compose is the one remaining subprocess and there the argv is
+    // what happened.
 
     async fn compose_services(&self, project_dir: &str) -> AppResult<Vec<ComposeService>> {
         let argv = self.compose_argv().join(" ");
-        self.record(
+        self.record_argv(
             "compose_services",
             Read,
             format!("{argv} ps --format json"),
@@ -707,7 +643,7 @@ impl ContainerRuntime for AuditRuntime {
 
     async fn compose_up(&self, project_dir: &str) -> AppResult<String> {
         let argv = self.compose_argv().join(" ");
-        self.record(
+        self.record_argv(
             "compose_up",
             Write,
             format!("{argv} up -d"),
@@ -719,7 +655,7 @@ impl ContainerRuntime for AuditRuntime {
 
     async fn compose_down(&self, project_dir: &str) -> AppResult<String> {
         let argv = self.compose_argv().join(" ");
-        self.record(
+        self.record_argv(
             "compose_down",
             Write,
             format!("{argv} down"),
@@ -732,7 +668,7 @@ impl ContainerRuntime for AuditRuntime {
     async fn compose_restart(&self, project_dir: &str, service: Option<&str>) -> AppResult<String> {
         let argv = self.compose_argv().join(" ");
         let suffix = service.map(|s| format!(" {s}")).unwrap_or_default();
-        self.record(
+        self.record_argv(
             "compose_restart",
             Write,
             format!("{argv} restart{suffix}"),
@@ -751,7 +687,7 @@ impl ContainerRuntime for AuditRuntime {
         let argv = self.compose_argv().join(" ");
         let verb = action.argv().join(" ");
         let suffix = service.map(|s| format!(" {s}")).unwrap_or_default();
-        self.record(
+        self.record_argv(
             "compose_exec",
             Write,
             format!("{argv} {verb}{suffix}"),
@@ -812,7 +748,7 @@ mod tests {
                 runtime: RuntimeKind::Docker,
                 op: "list_images".into(),
                 kind: Read,
-                detail: "GET /images/json".into(),
+                requests: vec!["GET /v1.51/images/json".into()],
                 args: vec![],
                 duration_ms: 0,
                 error: None,

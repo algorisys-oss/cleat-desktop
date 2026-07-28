@@ -201,7 +201,8 @@ export interface ActivityEntry {
   runtime: RuntimeKind;
   op: string;
   kind: OpKind;
-  detail: string;
+  /** The Engine API requests issued, in order; the literal argv for compose. */
+  requests: string[];
   args: [string, string][];
   durationMs: number;
   error: string | null;

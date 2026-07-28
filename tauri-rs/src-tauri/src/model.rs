@@ -261,10 +261,13 @@ pub enum OpKind {
 /// Asserting in a document that it makes only the calls it claims to is weaker
 /// than showing them, so every call through `ContainerRuntime` lands here.
 ///
-/// `detail` is the **actual** Engine API request — method and path — not a
-/// reconstructed CLI command. Cleat speaks the Engine API; there is no
-/// `docker run` behind these operations to reveal, and printing one would be
-/// showing a translation while implying it was a recording. Compose is the one
+/// `requests` holds the **actual** Engine API requests — method, path and query
+/// as captured off the wire, not reconstructed CLI commands. Cleat speaks the
+/// Engine API; there is no `docker run` behind these operations to reveal, and
+/// printing one would be showing a translation while implying it was a
+/// recording. It is a list because one operation can issue several: opening a
+/// shell creates the exec session, starts it, and then sizes the terminal —
+/// three round trips, and showing one would be a half-truth. Compose is the one
 /// exception and reports its real argv, because compose genuinely is a
 /// subprocess.
 #[derive(Debug, Clone, Serialize)]
@@ -278,8 +281,9 @@ pub struct ActivityEntry {
     /// Trait method name, e.g. `create_container`.
     pub op: String,
     pub kind: OpKind,
-    /// The Engine API request, or the literal argv for compose.
-    pub detail: String,
+    /// The Engine API requests issued, in order; the literal argv for compose.
+    /// Empty when the operation failed before reaching the daemon.
+    pub requests: Vec<String>,
     /// Arguments worth seeing, already redacted.
     pub args: Vec<(String, String)>,
     pub duration_ms: u64,

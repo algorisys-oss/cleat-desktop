@@ -3,7 +3,9 @@
 //! Each `suite::*` function takes a `&dyn ContainerRuntime`, so Docker and
 //! Podman are held to identical assertions. That is the point: the trait's
 //! value is that callers cannot tell the backends apart, and only running the
-//! same suite against both actually demonstrates it.
+//! same suite against both actually demonstrates it. The two `audit_*`
+//! functions take an owned `Box<dyn ContainerRuntime>` instead, because the
+//! decorator under test wraps a runtime rather than borrowing one.
 //!
 //! Every test skips cleanly when the runtime is unreachable. Resources are
 //! prefixed `cleat-test-` and removed in the same function, including on the
@@ -147,6 +149,9 @@ pub async fn pull_to_completion(
 
 pub mod suite {
     use super::*;
+    use cleat_lib::model::OpKind;
+    use cleat_lib::runtime::audit::{ActivityLog, AuditRuntime};
+    use std::sync::Arc;
 
     pub async fn system_summary(rt: &dyn ContainerRuntime) {
         let s = rt.system_summary().await.expect("system summary");
@@ -716,5 +721,186 @@ pub mod suite {
             .await
             .expect_err("nonexistent project dir should be rejected");
         assert_eq!(err.kind(), "invalid");
+    }
+
+    /// The activity log must record real operations, with timing and outcome.
+    ///
+    /// This is the claim the panel makes to the user — that what they see is
+    /// everything Cleat did — so it is worth pinning against a live daemon
+    /// rather than a mock.
+    ///
+    /// Takes an owned runtime because the decorator wraps rather than borrows,
+    /// which is also why this is the one suite function that does not take
+    /// `&dyn ContainerRuntime`.
+    pub async fn audit_records_operations(rt: Box<dyn ContainerRuntime>, names: &Names) {
+        let log = Arc::new(ActivityLog::new());
+        let audited = AuditRuntime::new(rt, log.clone());
+
+        assert!(log.snapshot().is_empty(), "log should start empty");
+
+        audited.list_images().await.expect("list images");
+
+        let after_read = log.snapshot();
+        assert_eq!(after_read.len(), 1, "one operation, one entry");
+        let entry = &after_read[0];
+        assert_eq!(entry.op, "list_images");
+        assert_eq!(
+            entry.kind,
+            OpKind::Read,
+            "listing must not count as a change"
+        );
+        // Captured off the wire rather than authored next to the call. Matched
+        // by prefix on purpose: bollard appends default query parameters here
+        // and the exact set is its business, not a regression when it changes.
+        assert_eq!(entry.requests.len(), 1, "one request: {:?}", entry.requests);
+        assert!(
+            entry.requests[0].starts_with("GET /images/json"),
+            "should be the real request line, got {:?}",
+            entry.requests[0]
+        );
+        assert!(
+            entry.error.is_none(),
+            "successful call must record no error"
+        );
+
+        // A failure must be recorded, not swallowed — the log is most useful
+        // precisely when something went wrong.
+        let _ = audited
+            .inspect_container("cleat-definitely-does-not-exist")
+            .await;
+        let after_failure = log.snapshot();
+        assert_eq!(after_failure.len(), 2);
+        assert_eq!(
+            after_failure[0].op, "inspect_container",
+            "snapshot must be newest first"
+        );
+        assert!(
+            after_failure[0].error.is_some(),
+            "the failure should have been recorded with its message"
+        );
+        // Capture is not conditional on success: a request that came back 404
+        // was still a request Cleat made, and hiding it would defeat the panel.
+        assert!(
+            after_failure[0]
+                .requests
+                .iter()
+                .any(|r| r.contains("cleat-definitely-does-not-exist")),
+            "the failed request should still be recorded: {:?}",
+            after_failure[0].requests
+        );
+
+        // Query parameters must survive into the log. This is the concrete
+        // thing the old authored strings got wrong — `list_images` claimed a
+        // bare `GET /images/json` while bollard was sending four parameters —
+        // and it is what a reader checking "did it list *my* stopped containers
+        // too" needs.
+        log.clear();
+        audited
+            .list_containers(true)
+            .await
+            .expect("list containers");
+        let listed = &log.snapshot()[0];
+        assert!(
+            listed.requests.iter().any(|r| r.contains("all=true")),
+            "the argument that changes the result must be visible: {:?}",
+            listed.requests
+        );
+
+        // An operation that issues several requests must show all of them. This
+        // is the case an authored string could not represent honestly, and the
+        // reason the field is a list.
+        log.clear();
+        audited.system_summary().await.expect("system summary");
+        let summary = &log.snapshot()[0];
+        assert_eq!(
+            summary.requests.len(),
+            2,
+            "version + info are two calls: {:?}",
+            summary.requests
+        );
+        assert!(
+            summary.requests.iter().any(|r| r.ends_with("/version"))
+                && summary.requests.iter().any(|r| r.ends_with("/info")),
+            "both endpoints should appear: {:?}",
+            summary.requests
+        );
+
+        // Writes must be distinguishable, since the panel filters on that.
+        let volume = format!("{}-audit", names.volume);
+        let _ = audited.remove_volume(&volume, true).await;
+        audited
+            .create_volume(&volume, None)
+            .await
+            .expect("create volume");
+        let created = log
+            .snapshot()
+            .into_iter()
+            .find(|e| e.op == "create_volume")
+            .expect("create_volume should be in the log");
+        assert_eq!(created.kind, OpKind::Write);
+        assert!(
+            created
+                .args
+                .iter()
+                .any(|(k, v)| k == "name" && *v == volume),
+            "arguments should be recorded: {:?}",
+            created.args
+        );
+        let _ = audited.remove_volume(&volume, true).await;
+
+        log.clear();
+        assert!(log.snapshot().is_empty(), "clear should empty the log");
+    }
+
+    /// Starting a shell must record every request it makes.
+    ///
+    /// There are three, and the count is the point: the hand-written string
+    /// this replaced advertised two, having forgotten that the TTY size can
+    /// only be set once the process exists and costs another round trip. Nobody
+    /// was going to notice that by reading the call site.
+    ///
+    /// Exec is also the path the capture hook is least obviously correct on: it
+    /// does not go through bollard's ordinary response handling but through
+    /// `process_upgraded`, which hijacks the connection. It still builds its
+    /// request through `build_request`, which is where the hook lives — but
+    /// that is a fact about bollard's internals, and an upgrade could change it
+    /// without changing anything Cleat compiles against. If that happened the
+    /// panel would quietly stop reporting the most privileged operation in the
+    /// app.
+    pub async fn audit_records_every_exec_request(rt: Box<dyn ContainerRuntime>, names: &Names) {
+        let log = Arc::new(ActivityLog::new());
+        let audited = AuditRuntime::new(rt, log.clone());
+
+        let name = format!("{}-audit-exec", names.container);
+        let Some(id) = long_running(&audited, &name).await else {
+            return;
+        };
+
+        log.clear();
+        let attached = audited
+            .exec_start(&id, vec!["/bin/sh".into()], 80, 24)
+            .await;
+        let entry = log
+            .snapshot()
+            .into_iter()
+            .find(|e| e.op == "exec_start")
+            .expect("exec_start should be in the log");
+
+        let _ = audited.remove_container(&id, true, true).await;
+        attached.expect("exec_start");
+
+        assert_eq!(
+            entry.requests.len(),
+            3,
+            "create the session, start it, size the terminal: {:?}",
+            entry.requests
+        );
+        assert!(
+            entry.requests[0].ends_with("/exec")
+                && entry.requests[1].ends_with("/start")
+                && entry.requests[2].contains("/resize"),
+            "all three should be recorded, in the order they went out: {:?}",
+            entry.requests
+        );
     }
 }

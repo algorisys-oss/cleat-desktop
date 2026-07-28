@@ -12,6 +12,7 @@ pub mod docker;
 pub mod engine;
 pub mod podman;
 pub mod raw;
+pub mod wire;
 
 use crate::error::AppResult;
 use crate::model::{

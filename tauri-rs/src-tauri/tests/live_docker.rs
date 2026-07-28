@@ -187,77 +187,18 @@ async fn podman_does_not_masquerade_as_docker() {
     }
 }
 
-/// The activity log must record real operations, with timing and outcome.
-///
-/// This is the claim the panel makes to the user — that what they see is
-/// everything Cleat did — so it is worth pinning against a live daemon rather
-/// than a mock.
 #[tokio::test]
 async fn audit_records_operations() {
-    use cleat_lib::model::OpKind;
-    use cleat_lib::runtime::audit::{ActivityLog, AuditRuntime};
-    use std::sync::Arc;
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
+    suite::audit_records_operations(Box::new(rt), &names).await;
+}
 
-    let Some((inner, _)) = rt().await else { return };
-
-    let log = Arc::new(ActivityLog::new());
-    let audited = AuditRuntime::new(Box::new(inner), log.clone());
-
-    assert!(log.snapshot().is_empty(), "log should start empty");
-
-    audited.list_images().await.expect("list images");
-
-    let after_read = log.snapshot();
-    assert_eq!(after_read.len(), 1, "one operation, one entry");
-    let entry = &after_read[0];
-    assert_eq!(entry.op, "list_images");
-    assert_eq!(
-        entry.kind,
-        OpKind::Read,
-        "listing must not count as a change"
-    );
-    assert_eq!(entry.detail, "GET /images/json");
-    assert!(
-        entry.error.is_none(),
-        "successful call must record no error"
-    );
-
-    // A failure must be recorded, not swallowed — the log is most useful
-    // precisely when something went wrong.
-    let _ = audited
-        .inspect_container("cleat-definitely-does-not-exist")
-        .await;
-    let after_failure = log.snapshot();
-    assert_eq!(after_failure.len(), 2);
-    assert_eq!(
-        after_failure[0].op, "inspect_container",
-        "snapshot must be newest first"
-    );
-    assert!(
-        after_failure[0].error.is_some(),
-        "the failure should have been recorded with its message"
-    );
-
-    // Writes must be distinguishable, since the panel filters on that.
-    let volume = "cleat-test-docker-audit-volume";
-    let _ = audited.remove_volume(volume, true).await;
-    audited
-        .create_volume(volume, None)
-        .await
-        .expect("create volume");
-    let created = log
-        .snapshot()
-        .into_iter()
-        .find(|e| e.op == "create_volume")
-        .expect("create_volume should be in the log");
-    assert_eq!(created.kind, OpKind::Write);
-    assert!(
-        created.args.iter().any(|(k, v)| k == "name" && v == volume),
-        "arguments should be recorded: {:?}",
-        created.args
-    );
-    let _ = audited.remove_volume(volume, true).await;
-
-    log.clear();
-    assert!(log.snapshot().is_empty(), "clear should empty the log");
+#[tokio::test]
+async fn audit_records_every_exec_request() {
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
+    suite::audit_records_every_exec_request(Box::new(rt), &names).await;
 }

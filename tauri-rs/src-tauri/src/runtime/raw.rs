@@ -14,6 +14,7 @@
 //! is tried first and is what normally runs.
 
 use crate::error::{AppError, AppResult};
+use crate::runtime::wire;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
@@ -22,6 +23,11 @@ use hyperlocal::{UnixClientExt, UnixConnector, Uri};
 /// GET `path` from the daemon behind `socket`, parsed as untyped JSON.
 pub async fn get_json(socket: &str, path: &str) -> AppResult<serde_json::Value> {
     let client: Client<UnixConnector, Full<Bytes>> = Client::unix();
+
+    // This client is ours, not bollard's, so bollard's capture hook never sees
+    // it. Reporting it here keeps the activity log's claim — that it shows
+    // every request — true for the lenient fallback too.
+    wire::record(format!("GET {path}"));
 
     let uri: hyper::Uri = Uri::new(socket, path).into();
     let response = client
@@ -46,8 +52,7 @@ pub async fn get_json(socket: &str, path: &str) -> AppResult<serde_json::Value> 
         });
     }
 
-    serde_json::from_slice(&body)
-        .map_err(|e| AppError::Other(format!("parsing {path}: {e}")))
+    serde_json::from_slice(&body).map_err(|e| AppError::Other(format!("parsing {path}: {e}")))
 }
 
 /// Normalise a runtime-reported container state onto Docker's vocabulary.
@@ -73,7 +78,14 @@ mod tests {
 
     #[test]
     fn passes_through_known_states() {
-        for s in ["running", "paused", "created", "dead", "restarting", "exited"] {
+        for s in [
+            "running",
+            "paused",
+            "created",
+            "dead",
+            "restarting",
+            "exited",
+        ] {
             assert_eq!(normalize_state(s), s);
         }
     }

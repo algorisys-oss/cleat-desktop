@@ -7,6 +7,7 @@ use crate::model::{
 };
 use crate::runtime::compose;
 use crate::runtime::engine::{parse_systemctl_units, validate_service_name, Engine};
+use crate::runtime::wire;
 use crate::runtime::{
     ByteStream, ContainerRuntime, ExecAttach, ImportStream, LogStream, PullStream, StatsStream,
 };
@@ -20,8 +21,12 @@ pub struct DockerRuntime {
 impl DockerRuntime {
     pub async fn connect() -> AppResult<Self> {
         // Honours DOCKER_HOST when set, otherwise the local socket / named pipe.
-        let docker = Docker::connect_with_defaults()
-            .map_err(|e| AppError::RuntimeUnavailable(format!("Docker: {e}")))?;
+        // Instrumented immediately: the activity log reports the requests this
+        // client issues, so there must be no window in which it is unhooked.
+        let docker = wire::instrument(
+            Docker::connect_with_defaults()
+                .map_err(|e| AppError::RuntimeUnavailable(format!("Docker: {e}")))?,
+        );
         docker
             .ping()
             .await

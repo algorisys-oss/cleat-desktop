@@ -167,7 +167,7 @@ outcome. It exists because of the first item under *What is not claimed* below:
 Cleat has root-equivalent access to the daemon, and a document asserting it
 makes only the calls it says it does is weaker than showing them.
 
-Two design points worth keeping:
+Three design points worth keeping:
 
 - **It records Engine API requests, not `docker` commands.** Cleat speaks the
   API; there is no CLI invocation behind `start_container` to reveal. Printing
@@ -175,12 +175,38 @@ Two design points worth keeping:
   *recording* — and the moment the two diverge, the panel is confidently wrong.
   Compose is the exception and shows the literal argv, because compose is the
   one remaining subprocess.
+- **The request lines are captured, not authored.**
+  [`runtime/wire.rs`](../tauri-rs/src-tauri/src/runtime/wire.rs) hooks
+  `bollard`'s request modifier, which runs inside `build_request` — the funnel
+  every endpoint goes through, including the connection upgrade behind exec —
+  and appends the real method, path and query to a task-local slot that
+  `AuditRuntime::record` opens around each operation. The first version of this
+  panel typed the method and path next to each call instead. It was already
+  wrong: it advertised `GET /images/json` while bollard was sending
+  `GET /images/json?all=false&shared-size=false&digests=false&manifests=false`.
+  A description of a request is a thing that can disagree with the request.
+  Because an operation can issue more than one, the field is a list and shows
+  every one — which immediately caught a second error: `exec_start` advertised
+  two requests and actually makes three, the third being the terminal resize
+  that can only happen once the process exists.
+  `audit_records_every_exec_request` pins all three, because exec is both the
+  most privileged operation in the app and the one whose capture depends on
+  bollard internals (`process_upgraded`) that a version bump could move. Both
+  audit tests live in `common::suite` and run against Docker *and* Podman: the
+  hook is installed per client, so only running both proves neither backend was
+  left unhooked.
 - **The recorder is a decorator on `ContainerRuntime`**
   ([`runtime/audit.rs`](../tauri-rs/src-tauri/src/runtime/audit.rs)), wrapped on
   in `AppState::select_runtime` — the only place a runtime is constructed.
   Logging per command handler would drift the first time someone adds a command
   and forgets the logging line, and a log that silently under-reports is worse
   than none.
+
+Two paths do not go through `bollard` and each has to announce itself: the
+lenient fallback in [`runtime/raw.rs`](../tauri-rs/src-tauri/src/runtime/raw.rs)
+calls `wire::record` directly, and compose passes its argv to `record_argv`.
+Compose still runs under capture, so a compose path that reached the API would
+surface rather than fall between the two mechanisms.
 
 Environment values whose keys look secret (`password`, `token`, `secret`,
 `*_key`, …) are masked before they reach the log, since the whole point is that

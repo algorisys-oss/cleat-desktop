@@ -299,3 +299,24 @@ async fn copies_an_image_from_docker() {
          podman has: {tags:?}"
     );
 }
+
+/// Podman's client must be instrumented too.
+///
+/// The decorator is runtime-agnostic, but the capture hook is installed per
+/// client — `docker.rs` and `podman.rs` each call `wire::instrument`, and a new
+/// backend could forget to. Only running this against both proves it.
+#[tokio::test]
+async fn audit_records_operations() {
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
+    suite::audit_records_operations(Box::new(rt), &names).await;
+}
+
+#[tokio::test]
+async fn audit_records_every_exec_request() {
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
+    suite::audit_records_every_exec_request(Box::new(rt), &names).await;
+}

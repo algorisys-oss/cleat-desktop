@@ -9,6 +9,10 @@
  * API directly, and printing a CLI equivalent would be showing a translation
  * while implying it was a recording. Compose rows are the exception and carry
  * the literal argv, because compose is a real subprocess.
+ *
+ * The request lines are captured as they go out, so one operation can list
+ * several: starting a shell takes three round trips, and collapsing them to one
+ * line would be a half-truth.
  */
 
 import { useMemo, useState } from "react";
@@ -31,6 +35,13 @@ import {
 
 /** Reads are dominated by the 4s list poll and the 1 Hz stats stream. */
 const DEFAULT_KINDS: OpKind[] = ["write"];
+
+/**
+ * Shown when an operation failed before reaching the daemon — a rejected
+ * service name, an unreachable socket. Saying so beats a blank cell, which
+ * reads as a missing record rather than an absent request.
+ */
+const NO_REQUEST = "(no request issued)";
 
 function timeOf(ms: number): string {
   const d = new Date(ms);
@@ -58,7 +69,7 @@ export default function Activity() {
       if (!q) return true;
       return (
         e.op.toLowerCase().includes(q) ||
-        e.detail.toLowerCase().includes(q) ||
+        e.requests.some((r) => r.toLowerCase().includes(q)) ||
         e.args.some(([k, v]) => k.toLowerCase().includes(q) || v.toLowerCase().includes(q))
       );
     });
@@ -72,7 +83,10 @@ export default function Activity() {
       .map((e) => {
         const args = e.args.map(([k, v]) => `${k}=${v}`).join(" ");
         const failed = e.error ? `  ERROR: ${e.error}` : "";
-        return `${timeOf(e.at)}  ${e.runtime}  ${e.detail}${args ? `  [${args}]` : ""}  ${e.durationMs}ms${failed}`;
+        // One line per operation even when it issued several requests, so the
+        // paste stays greppable.
+        const requests = e.requests.length ? e.requests.join(" ; ") : NO_REQUEST;
+        return `${timeOf(e.at)}  ${e.runtime}  ${requests}${args ? `  [${args}]` : ""}  ${e.durationMs}ms${failed}`;
       })
       .join("\n");
     try {
@@ -176,8 +190,23 @@ export default function Activity() {
                       <Badge tone={e.error ? "danger" : e.kind === "write" ? "warn" : "idle"}>
                         {e.op}
                       </Badge>
-                      <code className="font-mono text-[11px] text-ink-dim">{e.detail}</code>
+                      {e.requests.length === 0 ? (
+                        <span className="font-mono text-[11px] text-ink-faint">{NO_REQUEST}</span>
+                      ) : (
+                        <code className="font-mono text-[11px] break-all text-ink-dim">
+                          {e.requests[0]}
+                        </code>
+                      )}
                     </div>
+                    {/* Rare — opening a shell is three round trips. */}
+                    {e.requests.slice(1).map((request, i) => (
+                      <div
+                        key={i}
+                        className="mt-0.5 font-mono text-[11px] break-all text-ink-dim"
+                      >
+                        {request}
+                      </div>
+                    ))}
                     {e.args.length > 0 && (
                       <div className="mt-1 flex flex-wrap gap-1">
                         {e.args.map(([k, v]) => (
@@ -205,10 +234,10 @@ export default function Activity() {
       </Panel>
 
       <p className="text-[11px] text-ink-faint">
-        These are Engine API requests, which is what Cleat actually sends — not reconstructed{" "}
-        <code className="font-mono">docker</code> commands. Compose rows show the real argv, because
-        compose is the one operation that runs a subprocess. Environment values that look like
-        secrets are masked.
+        These are Engine API requests captured as Cleat sends them — not reconstructed{" "}
+        <code className="font-mono">docker</code> commands, and not a description written alongside
+        the code. Compose rows show the real argv, because compose is the one operation that runs a
+        subprocess. Environment values that look like secrets are masked.
       </p>
     </div>
   );

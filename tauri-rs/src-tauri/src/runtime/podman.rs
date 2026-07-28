@@ -17,6 +17,7 @@ use crate::model::{
 };
 use crate::runtime::compose;
 use crate::runtime::engine::{parse_systemctl_units, validate_service_name, Engine};
+use crate::runtime::wire;
 use crate::runtime::{
     ByteStream, ContainerRuntime, ExecAttach, ImportStream, LogStream, PullStream, StatsStream,
 };
@@ -83,8 +84,12 @@ fn current_uid() -> u32 {
 /// Connect to whichever Podman socket this system actually exposes.
 fn connect_client() -> AppResult<(Docker, String)> {
     let socket = podman_socket_path()?;
-    let client = Docker::connect_with_unix(&socket, 120, bollard::API_DEFAULT_VERSION)
-        .map_err(|e| AppError::RuntimeUnavailable(format!("Podman socket {socket}: {e}")))?;
+    // Instrumented here rather than at the call site so no caller can obtain an
+    // unhooked client — see [`wire`].
+    let client = wire::instrument(
+        Docker::connect_with_unix(&socket, 120, bollard::API_DEFAULT_VERSION)
+            .map_err(|e| AppError::RuntimeUnavailable(format!("Podman socket {socket}: {e}")))?,
+    );
     Ok((client, socket))
 }
 
