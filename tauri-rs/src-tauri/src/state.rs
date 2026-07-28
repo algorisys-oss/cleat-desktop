@@ -2,6 +2,7 @@
 
 use crate::error::{AppError, AppResult};
 use crate::model::RuntimeKind;
+use crate::runtime::audit::{ActivityLog, AuditRuntime};
 use crate::runtime::{self, ContainerRuntime, ExecStdin};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -57,6 +58,9 @@ pub struct AppState {
     /// Interactive exec sessions, keyed by the same channel name as their
     /// output task in `streams`.
     execs: RwLock<HashMap<String, Arc<ExecSession>>>,
+    /// Every operation performed, for the activity panel. Outlives runtime
+    /// switches on purpose — "what did I just do" spans them.
+    activity: Arc<ActivityLog>,
 }
 
 impl AppState {
@@ -79,11 +83,21 @@ impl AppState {
 
     /// Switch runtimes. The new one is connected and pinged *before* the old
     /// one is dropped, so a failed switch leaves the app on a working runtime.
+    ///
+    /// This is the only place a runtime is constructed, which is why the audit
+    /// wrapper goes on here: there is no path to a bare runtime that could
+    /// bypass the activity log.
     pub async fn select_runtime(&self, kind: RuntimeKind) -> AppResult<()> {
-        let next: Arc<dyn ContainerRuntime> = runtime::connect(kind).await?.into();
+        let inner = runtime::connect(kind).await?;
+        let next: Arc<dyn ContainerRuntime> =
+            Arc::new(AuditRuntime::new(inner, self.activity.clone()));
         self.stop_all_streams().await;
         *self.runtime.write().await = Some(next);
         Ok(())
+    }
+
+    pub fn activity(&self) -> &Arc<ActivityLog> {
+        &self.activity
     }
 
     /// Pick the first runtime that answers, so the app is usable on launch

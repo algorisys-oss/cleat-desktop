@@ -7,9 +7,17 @@ import Dashboard from "./views/Dashboard";
 import Images from "./views/Images";
 import Networks from "./views/Networks";
 import Volumes from "./views/Volumes";
+import Activity from "./views/Activity";
 import Compose from "./views/Compose";
 
-type ViewId = "dashboard" | "containers" | "images" | "networks" | "volumes" | "compose";
+type ViewId =
+  | "dashboard"
+  | "containers"
+  | "images"
+  | "networks"
+  | "volumes"
+  | "compose"
+  | "activity";
 
 const NAV: { id: ViewId; label: string; icon: string }[] = [
   { id: "dashboard", label: "Dashboard", icon: "▦" },
@@ -18,6 +26,7 @@ const NAV: { id: ViewId; label: string; icon: string }[] = [
   { id: "networks", label: "Networks", icon: "⁂" },
   { id: "volumes", label: "Volumes", icon: "▤" },
   { id: "compose", label: "Compose", icon: "⧉" },
+  { id: "activity", label: "Activity", icon: "◷" },
 ];
 
 export default function App() {
@@ -176,6 +185,7 @@ function Shell() {
             {view === "networks" && <Networks />}
             {view === "volumes" && <Volumes />}
             {view === "compose" && <Compose />}
+            {view === "activity" && <Activity />}
           </div>
         )}
       </main>

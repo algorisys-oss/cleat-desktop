@@ -6,6 +6,7 @@
 //! support) lives in the per-runtime impls. A future nerdctl/containerd backend
 //! implements this trait without touching a single command handler.
 
+pub mod audit;
 pub mod compose;
 pub mod docker;
 pub mod engine;

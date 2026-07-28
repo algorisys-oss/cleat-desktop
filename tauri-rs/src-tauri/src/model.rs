@@ -241,3 +241,48 @@ pub struct CreateContainerRequest {
     pub auto_remove: bool,
     pub restart_policy: Option<String>,
 }
+
+// --------------------------------------------------------------------- activity
+
+/// Whether an operation only observed state or changed it.
+///
+/// The UI defaults to writes. Reads are dominated by the 4-second list poll and
+/// the 1 Hz stats stream, which would bury anything the user actually did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OpKind {
+    Read,
+    Write,
+}
+
+/// One operation Cleat performed against a runtime.
+///
+/// This exists because Cleat holds root-equivalent control of the daemon.
+/// Asserting in a document that it makes only the calls it claims to is weaker
+/// than showing them, so every call through `ContainerRuntime` lands here.
+///
+/// `detail` is the **actual** Engine API request — method and path — not a
+/// reconstructed CLI command. Cleat speaks the Engine API; there is no
+/// `docker run` behind these operations to reveal, and printing one would be
+/// showing a translation while implying it was a recording. Compose is the one
+/// exception and reports its real argv, because compose genuinely is a
+/// subprocess.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityEntry {
+    /// Monotonic within a session; also the React list key.
+    pub seq: u64,
+    /// Milliseconds since the Unix epoch.
+    pub at: u64,
+    pub runtime: RuntimeKind,
+    /// Trait method name, e.g. `create_container`.
+    pub op: String,
+    pub kind: OpKind,
+    /// The Engine API request, or the literal argv for compose.
+    pub detail: String,
+    /// Arguments worth seeing, already redacted.
+    pub args: Vec<(String, String)>,
+    pub duration_ms: u64,
+    /// None when the call succeeded.
+    pub error: Option<String>,
+}

@@ -182,3 +182,27 @@ export function errorMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
   return String(e);
 }
+
+/** Read-only observation vs. state change. The activity panel defaults to writes. */
+export type OpKind = "read" | "write";
+
+/**
+ * One operation Cleat performed against a runtime.
+ *
+ * `detail` is the *actual* Engine API request, not a reconstructed CLI command —
+ * Cleat speaks the Engine API, so there is no `docker run` behind these to show.
+ * Compose entries are the exception and carry the literal argv, because compose
+ * really is a subprocess.
+ */
+export interface ActivityEntry {
+  seq: number;
+  /** Milliseconds since the Unix epoch. */
+  at: number;
+  runtime: RuntimeKind;
+  op: string;
+  kind: OpKind;
+  detail: string;
+  args: [string, string][];
+  durationMs: number;
+  error: string | null;
+}

@@ -35,6 +35,8 @@ Built with Rust + Tauri v2 and React/TypeScript. No Electron, no background HTTP
 
 **Compose** — pick a project directory, bring stacks up and down, restart individual services, with live streaming output and a working Cancel button.
 
+**Activity log** — every call Cleat makes to a runtime, with arguments, timing and outcome. These are the real Engine API requests, not reconstructed `docker` commands; compose rows show the literal argv because compose is the one subprocess. Values that look like secrets are masked.
+
 **Runtime switcher** — Docker and Podman detected independently, each reporting *why* it isn't available when it isn't. Runtimes that aren't installed are hidden; installed-but-not-running ones stay visible with the command that fixes them.
 
 ## Requirements

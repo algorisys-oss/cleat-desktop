@@ -91,6 +91,9 @@ pub fn run() {
             commands::copy_image,
             commands::stop_copy_image,
             commands::stop_all_streams,
+            // activity
+            commands::activity_log,
+            commands::clear_activity_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

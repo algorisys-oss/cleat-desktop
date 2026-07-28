@@ -7,8 +7,8 @@
 
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    ComposeService, Container, CreateContainerRequest, Image, Network, RuntimeInfo, RuntimeKind,
-    Stats, SystemSummary, Volume,
+    ActivityEntry, ComposeService, Container, CreateContainerRequest, Image, Network, RuntimeInfo,
+    RuntimeKind, Stats, SystemSummary, Volume,
 };
 use crate::runtime;
 use crate::state::AppState;
@@ -905,4 +905,23 @@ pub async fn ping_runtime(state: State<'_, AppState>) -> AppResult<bool> {
         Err(AppError::NoRuntime(_)) => Ok(false),
         Err(e) => Err(e),
     }
+}
+
+// ================================================================ activity
+
+/// Everything Cleat has asked a runtime to do this session, newest first.
+///
+/// Cleat holds root-equivalent control of the daemon; this is how that claim is
+/// shown rather than merely asserted. Recorded by the audit decorator in
+/// `runtime::audit`, which wraps the runtime in `AppState::select_runtime` so
+/// no operation can bypass it.
+#[tauri::command]
+pub async fn activity_log(state: State<'_, AppState>) -> AppResult<Vec<ActivityEntry>> {
+    Ok(state.activity().snapshot())
+}
+
+#[tauri::command]
+pub async fn clear_activity_log(state: State<'_, AppState>) -> AppResult<()> {
+    state.activity().clear();
+    Ok(())
 }

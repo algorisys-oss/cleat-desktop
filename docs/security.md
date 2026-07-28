@@ -160,6 +160,36 @@ so the compose view can open a directory picker. The CSP in
 to `'self'` plus the IPC origin; there is no remote content and no reason for
 there to be.
 
+## Showing what Cleat actually does
+
+The **Activity** view records every operation, with arguments, timing and
+outcome. It exists because of the first item under *What is not claimed* below:
+Cleat has root-equivalent access to the daemon, and a document asserting it
+makes only the calls it says it does is weaker than showing them.
+
+Two design points worth keeping:
+
+- **It records Engine API requests, not `docker` commands.** Cleat speaks the
+  API; there is no CLI invocation behind `start_container` to reveal. Printing
+  `docker start abc` would be showing a *translation* while implying it was a
+  *recording* — and the moment the two diverge, the panel is confidently wrong.
+  Compose is the exception and shows the literal argv, because compose is the
+  one remaining subprocess.
+- **The recorder is a decorator on `ContainerRuntime`**
+  ([`runtime/audit.rs`](../tauri-rs/src-tauri/src/runtime/audit.rs)), wrapped on
+  in `AppState::select_runtime` — the only place a runtime is constructed.
+  Logging per command handler would drift the first time someone adds a command
+  and forgets the logging line, and a log that silently under-reports is worse
+  than none.
+
+Environment values whose keys look secret (`password`, `token`, `secret`,
+`*_key`, …) are masked before they reach the log, since the whole point is that
+people paste this into bug reports. `masks_secret_looking_env_values` and
+`leaves_ordinary_env_alone` pin both directions.
+
+The buffer holds the most recent 500 entries in memory and is never written to
+disk.
+
 ## What is *not* claimed
 
 - **We do not sandbox the daemon.** If your user can reach the Docker socket, so

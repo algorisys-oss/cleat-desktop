@@ -6,6 +6,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ActivityEntry,
   ComposeAction,
   ComposeService,
   Container,
@@ -326,3 +327,9 @@ export const stopAllStreams = () => invoke<void>("stop_all_streams");
 /** Fires once at startup with the runtime auto-selection result. */
 export const onRuntimeReady = (cb: (kind: RuntimeKind | null) => void) =>
   listen<RuntimeKind | null>("runtime:ready", (e) => cb(e.payload));
+
+// -------------------------------------------------------------------- activity
+
+/** Everything Cleat has asked a runtime to do this session, newest first. */
+export const activityLog = () => invoke<ActivityEntry[]>("activity_log");
+export const clearActivityLog = () => invoke<void>("clear_activity_log");

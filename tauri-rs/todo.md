@@ -117,6 +117,8 @@ src/
 - [x] Dashboard with system overview (container counts by state, image count)
 - [x] System info (runtime version, API version, OS, kernel, storage driver, host resources)
 - [ ] System-wide resource usage graphs over time
+- [x] Activity log — every runtime call with args, timing and outcome, via a
+      decorator on `ContainerRuntime` so nothing can bypass it
 - [ ] Event stream (real-time Docker/Podman events)
 - [ ] Disk usage breakdown (images, containers, volumes, build cache)
 - [ ] Prune all unused resources in one action
