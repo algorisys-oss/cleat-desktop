@@ -388,6 +388,154 @@ pub async fn stop_follow_logs(state: State<'_, AppState>, id: String) -> AppResu
     Ok(state.stop_stream(&format!("logs:{id}")).await)
 }
 
+// ==================================================================== exec
+//
+// The only bidirectional path in the app. Output is pumped onto `channel` like
+// any other stream; input arrives one `exec_write` call at a time and is
+// routed to the session's parked stdin writer.
+//
+// Terminal traffic is base64 on both legs. Tauri events are JSON, so raw bytes
+// would serialise as an array of integers — several times larger than base64 —
+// and a `String` would force a lossy UTF-8 decode that corrupts any multi-byte
+// character split across a chunk boundary and mangles escape sequences.
+
+/// Probe the container for a shell that exists, so the UI can offer a sensible
+/// default instead of failing on every image without bash.
+#[tauri::command]
+pub async fn detect_shell(state: State<'_, AppState>, id: String) -> AppResult<String> {
+    let rt = state.runtime().await?;
+    rt.detect_shell(&id).await
+}
+
+#[tauri::command]
+pub async fn exec_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    argv: Vec<String>,
+    cols: u16,
+    rows: u16,
+    channel: String,
+) -> AppResult<()> {
+    let rt = state.runtime().await?;
+    let attach = rt.exec_start(&id, argv, cols, rows).await?;
+    let runtime::ExecAttach {
+        exec_id,
+        mut output,
+        stdin,
+    } = attach;
+
+    // Register stdin before the pump starts: a fast-exiting process could
+    // otherwise emit its end frame while the frontend still has no session to
+    // tear down.
+    state.register_exec(channel.clone(), exec_id, stdin).await;
+
+    let pump_channel = channel.clone();
+    let handle = tokio::spawn(async move {
+        while let Some(item) = output.next().await {
+            match item {
+                Ok(bytes) => {
+                    if app.emit(&pump_channel, b64(&bytes)).is_err() {
+                        break; // window gone
+                    }
+                }
+                Err(e) => {
+                    emit_end(&app, &pump_channel, Some(e.message()));
+                    return;
+                }
+            }
+        }
+        // The stream ending means the process exited or the connection dropped.
+        emit_end(&app, &pump_channel, None);
+    });
+
+    state
+        .register_stream(format!("exec:{channel}"), handle)
+        .await;
+    Ok(())
+}
+
+/// Forward keystrokes. `data` is base64.
+#[tauri::command]
+pub async fn exec_write(
+    state: State<'_, AppState>,
+    session: String,
+    data: String,
+) -> AppResult<()> {
+    let bytes = unb64(&data)?;
+    state.exec(&session).await?.write(&bytes).await
+}
+
+#[tauri::command]
+pub async fn exec_resize(
+    state: State<'_, AppState>,
+    session: String,
+    cols: u16,
+    rows: u16,
+) -> AppResult<()> {
+    let rt = state.runtime().await?;
+    let exec_id = state.exec(&session).await?.exec_id.clone();
+    rt.exec_resize(&exec_id, cols, rows).await
+}
+
+#[tauri::command]
+pub async fn exec_stop(state: State<'_, AppState>, session: String) -> AppResult<bool> {
+    Ok(state.stop_exec(&session).await)
+}
+
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn unb64(s: &str) -> AppResult<Vec<u8>> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .map_err(|e| AppError::Invalid(format!("malformed exec payload: {e}")))
+}
+
+#[cfg(test)]
+mod exec_tests {
+    use super::*;
+
+    /// Terminal traffic is not text. Escape sequences, control bytes and bytes
+    /// that are not valid UTF-8 at all have to survive the round trip intact —
+    /// this is the reason the channel is base64 rather than a `String`.
+    #[test]
+    fn base64_round_trips_arbitrary_terminal_bytes() {
+        let cases: Vec<Vec<u8>> = vec![
+            b"ls -la\n".to_vec(),
+            b"\x1b[31mred\x1b[0m".to_vec(),     // colour escape
+            b"\x03".to_vec(),                   // Ctrl-C
+            "café ☕".as_bytes().to_vec(),      // multi-byte UTF-8
+            vec![0x00, 0x01, 0x02, 0xff, 0xfe], // not valid UTF-8
+            vec![],                             // empty
+        ];
+
+        for original in cases {
+            let decoded = unb64(&b64(&original)).expect("decode");
+            assert_eq!(decoded, original, "round trip altered {original:?}");
+        }
+    }
+
+    /// A partial UTF-8 sequence at a chunk boundary is normal in a byte stream.
+    /// Encoding must not "fix" it — the frontend reassembles across chunks.
+    #[test]
+    fn base64_preserves_split_utf8_sequences() {
+        let full = "é".as_bytes().to_vec(); // two bytes
+        let (head, tail) = full.split_at(1);
+        assert_eq!(unb64(&b64(head)).unwrap(), head);
+        assert_eq!(unb64(&b64(tail)).unwrap(), tail);
+    }
+
+    #[test]
+    fn rejects_malformed_payload() {
+        let err = unb64("not!valid!base64").expect_err("should reject");
+        assert_eq!(err.kind(), "invalid");
+    }
+}
+
 #[tauri::command]
 pub async fn stream_stats(
     app: AppHandle,
@@ -572,7 +720,17 @@ pub async fn copy_image(
 
     let _ = app.emit(
         &channel,
-        transfer_event(&reference, from, to, total, "transferring", 0, None, false, None),
+        transfer_event(
+            &reference,
+            from,
+            to,
+            total,
+            "transferring",
+            0,
+            None,
+            false,
+            None,
+        ),
     );
 
     let counter = Arc::new(AtomicU64::new(0));
@@ -651,7 +809,11 @@ pub async fn copy_image(
                 from,
                 to,
                 total,
-                if failure.is_some() { "failed" } else { "complete" },
+                if failure.is_some() {
+                    "failed"
+                } else {
+                    "complete"
+                },
                 sent,
                 None,
                 true,
@@ -721,10 +883,7 @@ pub async fn compose_exec(
 
 /// Cancel a running compose action. `kill_on_drop` terminates the child.
 #[tauri::command]
-pub async fn stop_compose_exec(
-    state: State<'_, AppState>,
-    project_dir: String,
-) -> AppResult<bool> {
+pub async fn stop_compose_exec(state: State<'_, AppState>, project_dir: String) -> AppResult<bool> {
     Ok(state.stop_stream(&format!("compose:{project_dir}")).await)
 }
 

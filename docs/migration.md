@@ -33,6 +33,7 @@ Three reasons, in order of weight:
 | Runtimes | Docker only | Docker + Podman, both verified against live daemons |
 | Compose | `exec()` shell string, `docker-compose` (v1, EOL) | argv subprocess, `docker compose` |
 | In-container services | `docker exec … systemctl <user string>` (injectable, and the list route was broken) | `create_exec` argv + validated unit name |
+| Terminal | none | interactive TTY exec with stdin, resize tracking, per-image shell probe |
 | Logs | one-shot `tail 100` | streaming follow, search, stdout/stderr filter, 5k cap |
 | Stats | single sample | 1 Hz stream, sparklines, cache-corrected memory |
 | Pull progress | server-side `console.log` only | per-layer progress in the UI |
@@ -85,7 +86,6 @@ Backend command exists and is tested; only the UI is missing:
 
 Not started:
 
-- [ ] Exec into container (PTY terminal)
 - [ ] Compose per-service logs
 - [ ] Container file browser
 - [ ] Image build from Dockerfile

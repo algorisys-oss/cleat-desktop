@@ -65,7 +65,8 @@ src/
 - [x] Container services (list/start/stop/restart units via the container's init system)
 - [x] Create container from image — backend command + validation
 - [ ] Create-container UI form (backend `create_container` is done and tested)
-- [ ] Exec into container (integrated terminal via PTY)
+- [x] Exec into container (integrated terminal via PTY) — TTY exec with stdin,
+      resize tracking, and a per-image shell probe; xterm.js front end
 - [ ] Container file browser
 - [ ] Health check *history*
 
@@ -153,14 +154,17 @@ src/
 
 ## Testing
 
-`cd src-tauri && cargo test` — 50 tests.
+`cd src-tauri && cargo test` — 69 tests.
 
-- **16 unit**: port-spec parsing, service-name validation (injection cases),
-  systemctl output parsing, CPU%/memory reduction, compose `ps` JSON parsing.
-- **14 Docker + 17 Podman integration**: both runtimes run the *same* shared
+- **27 unit**: port-spec parsing, service-name validation (injection cases),
+  systemctl output parsing, CPU%/memory reduction, compose `ps` JSON parsing,
+  exec base64 framing (control bytes, invalid UTF-8, split sequences), and the
+  exec session registry.
+- **18 Docker + 21 Podman integration**: both runtimes run the *same* shared
   suite (`tests/common/mod.rs`) — system summary, listing and DTO mapping,
   volume/network round-trips, container lifecycle, streaming stats and log
-  follow, error-kind mapping, injection rejection. Plus per-runtime specifics:
+  follow, interactive exec (TTY round trip, resize, shell probe), error-kind
+  mapping, injection rejection. Plus per-runtime specifics:
   compose front-end, Podman identity, overlay-driver rejection, and a
   Docker→Podman image copy.
 - **3 compose streaming**: output arrives before the command completes,

@@ -6,9 +6,9 @@
 
 mod common;
 
-use common::{suite, Names};
 use cleat_lib::runtime::docker::DockerRuntime;
 use cleat_lib::runtime::ContainerRuntime;
+use common::{suite, Names};
 
 async fn rt() -> Option<(DockerRuntime, Names)> {
     match DockerRuntime::connect().await {
@@ -46,31 +46,41 @@ async fn lists_networks() {
 
 #[tokio::test]
 async fn volume_roundtrip() {
-    let Some((rt, names)) = rt().await else { return };
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
     suite::volume_roundtrip(&rt, &names).await;
 }
 
 #[tokio::test]
 async fn network_roundtrip() {
-    let Some((rt, names)) = rt().await else { return };
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
     suite::network_roundtrip(&rt, &names).await;
 }
 
 #[tokio::test]
 async fn container_lifecycle() {
-    let Some((rt, names)) = rt().await else { return };
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
     suite::container_lifecycle(&rt, &names).await;
 }
 
 #[tokio::test]
 async fn stats_stream_reports_cpu() {
-    let Some((rt, names)) = rt().await else { return };
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
     suite::stats_stream(&rt, &names).await;
 }
 
 #[tokio::test]
 async fn log_follow_delivers_output() {
-    let Some((rt, names)) = rt().await else { return };
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
     suite::log_follow(&rt, &names).await;
 }
 
@@ -84,6 +94,36 @@ async fn maps_error_kinds() {
 async fn rejects_injection_in_service_control() {
     let Some((rt, _)) = rt().await else { return };
     suite::rejects_injection(&rt).await;
+}
+
+#[tokio::test]
+async fn exec_roundtrip() {
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
+    suite::exec_roundtrip(&rt, &names).await;
+}
+
+#[tokio::test]
+async fn exec_resize() {
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
+    suite::exec_resize(&rt, &names).await;
+}
+
+#[tokio::test]
+async fn detects_a_usable_shell() {
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
+    suite::detect_shell(&rt, &names).await;
+}
+
+#[tokio::test]
+async fn rejects_empty_exec_command() {
+    let Some((rt, _)) = rt().await else { return };
+    suite::rejects_empty_exec(&rt).await;
 }
 
 #[tokio::test]

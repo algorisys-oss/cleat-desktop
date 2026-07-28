@@ -8,7 +8,7 @@ use crate::model::{
 use crate::runtime::compose;
 use crate::runtime::engine::{parse_systemctl_units, validate_service_name, Engine};
 use crate::runtime::{
-    ByteStream, ContainerRuntime, ImportStream, LogStream, PullStream, StatsStream,
+    ByteStream, ContainerRuntime, ExecAttach, ImportStream, LogStream, PullStream, StatsStream,
 };
 use async_trait::async_trait;
 use bollard::Docker;
@@ -33,7 +33,9 @@ impl DockerRuntime {
             .and_then(|h| h.strip_prefix("unix://").map(str::to_string))
             .or_else(|| {
                 let default = "/var/run/docker.sock";
-                std::path::Path::new(default).exists().then(|| default.to_string())
+                std::path::Path::new(default)
+                    .exists()
+                    .then(|| default.to_string())
             });
 
         Ok(Self {
@@ -152,6 +154,24 @@ impl ContainerRuntime for DockerRuntime {
         self.engine.stream_stats(id).await
     }
 
+    async fn exec_start(
+        &self,
+        id: &str,
+        argv: Vec<String>,
+        cols: u16,
+        rows: u16,
+    ) -> AppResult<ExecAttach> {
+        self.engine.exec_start(id, argv, cols, rows).await
+    }
+
+    async fn exec_resize(&self, exec_id: &str, cols: u16, rows: u16) -> AppResult<()> {
+        self.engine.exec_resize(exec_id, cols, rows).await
+    }
+
+    async fn detect_shell(&self, id: &str) -> AppResult<String> {
+        self.engine.detect_shell(id).await
+    }
+
     async fn list_container_services(&self, id: &str) -> AppResult<Vec<(String, String)>> {
         let out = self
             .engine
@@ -184,10 +204,7 @@ impl ContainerRuntime for DockerRuntime {
         };
         validate_service_name(service)?;
         self.engine
-            .exec_capture(
-                id,
-                vec!["systemctl".into(), action.into(), service.into()],
-            )
+            .exec_capture(id, vec!["systemctl".into(), action.into(), service.into()])
             .await
     }
 

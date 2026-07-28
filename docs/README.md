@@ -39,4 +39,4 @@ Run it from the repository root:
 | Frontend (`src`) | ~3,540 |
 | Tauri commands | 50 |
 | `ContainerRuntime` trait methods | 40 |
-| Tests | 50 (16 unit, 14 Docker, 17 Podman, 3 compose) |
+| Tests | 69 (27 unit, 18 Docker, 21 Podman, 3 compose) |

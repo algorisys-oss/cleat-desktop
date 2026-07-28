@@ -11,9 +11,9 @@
 
 #![allow(dead_code)] // each test binary uses a different subset
 
-use futures_util::StreamExt;
 use cleat_lib::model::CreateContainerRequest;
 use cleat_lib::runtime::ContainerRuntime;
+use futures_util::StreamExt;
 
 /// Distinct names per runtime, so a Docker run and a Podman run can overlap.
 pub struct Names {
@@ -107,13 +107,38 @@ pub mod suite {
     }
 
     pub async fn list_containers(rt: &dyn ContainerRuntime) {
-        let all = rt.list_containers(true).await.expect("list all");
-        let running = rt.list_containers(false).await.expect("list running");
+        // Two calls cannot be atomic, and the rest of the suite is creating and
+        // destroying containers on other threads throughout. Comparing *counts*
+        // sampled `all`-then-`running` therefore fails whenever a container
+        // starts between them — nothing to do with the `all` flag being wrong.
+        //
+        // Sampling `running` first makes concurrent arrivals harmless: they can
+        // only ever add to the later, wider set. The remaining hazard is a
+        // container removed between the two calls, which is what the retry
+        // absorbs.
+        let mut missing = Vec::new();
+        for attempt in 0..2 {
+            let running = rt.list_containers(false).await.expect("list running");
+            let all = rt.list_containers(true).await.expect("list all");
+
+            let all_ids: std::collections::HashSet<_> = all.iter().map(|c| c.id.as_str()).collect();
+            missing = running
+                .iter()
+                .filter(|c| !all_ids.contains(c.id.as_str()))
+                .map(|c| format!("{} ({})", c.name, c.id))
+                .collect();
+
+            if missing.is_empty() {
+                break;
+            }
+            eprintln!("list_containers: retrying after churn on attempt {attempt}");
+        }
         assert!(
-            running.len() <= all.len(),
-            "running set must be a subset of all"
+            missing.is_empty(),
+            "running containers absent from the full list: {missing:?}"
         );
 
+        let all = rt.list_containers(true).await.expect("list all");
         for c in &all {
             assert!(!c.id.is_empty(), "container id must be populated");
             assert!(!c.name.is_empty(), "container name must be populated");
@@ -443,6 +468,195 @@ pub mod suite {
             .control_container_service("cleat-nonexistent", "--force", "start")
             .await
             .expect_err("a name that is really a flag must be rejected");
+        assert_eq!(err.kind(), "invalid");
+    }
+
+    /// Spawn a long-lived container so an interactive session has something to
+    /// attach to. Returns None (test skips) when the runtime can't oblige.
+    async fn long_running(rt: &dyn ContainerRuntime, name: &str) -> Option<String> {
+        let image = ensure_image(rt).await?;
+        let _ = rt.remove_container(name, true, true).await;
+
+        let req = CreateContainerRequest {
+            image,
+            name: Some(name.to_string()),
+            env: vec![],
+            ports: vec![],
+            volumes: vec![],
+            network: None,
+            command: vec!["sleep".into(), "120".into()],
+            auto_remove: false,
+            restart_policy: None,
+        };
+
+        let id = match rt.create_container(req).await {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!(
+                    "skipping exec test: could not create container ({})",
+                    e.message()
+                );
+                return None;
+            }
+        };
+        if let Err(e) = rt.start_container(&id).await {
+            eprintln!(
+                "skipping exec test: could not start container ({})",
+                e.message()
+            );
+            let _ = rt.remove_container(&id, true, true).await;
+            return None;
+        }
+        Some(id)
+    }
+
+    /// The round trip that matters: bytes written to stdin come back on the
+    /// output stream, through a real TTY, on both runtimes.
+    pub async fn exec_roundtrip(rt: &dyn ContainerRuntime, names: &Names) {
+        let name = format!("{}-exec", names.container);
+        let Some(id) = long_running(rt, &name).await else {
+            return;
+        };
+
+        let result = async {
+            let attach = rt
+                .exec_start(&id, vec!["/bin/sh".into()], 80, 24)
+                .await
+                .map_err(|e| format!("exec_start: {}", e.message()))?;
+            let cleat_lib::runtime::ExecAttach {
+                exec_id,
+                mut output,
+                mut stdin,
+            } = attach;
+
+            assert!(!exec_id.is_empty(), "exec id must be populated for resize");
+
+            const MARKER: &str = "cleat-exec-marker";
+            {
+                use tokio::io::AsyncWriteExt;
+                stdin
+                    .write_all(format!("echo {MARKER}\n").as_bytes())
+                    .await
+                    .map_err(|e| format!("write to exec stdin: {e}"))?;
+                stdin.flush().await.map_err(|e| format!("flush: {e}"))?;
+            }
+
+            let mut seen = Vec::new();
+            let deadline = std::time::Duration::from_secs(20);
+            loop {
+                match tokio::time::timeout(deadline, output.next()).await {
+                    Ok(Some(Ok(chunk))) => {
+                        seen.extend_from_slice(&chunk);
+                        // Match on bytes: TTY output is not line-oriented and
+                        // carries escape sequences around the payload.
+                        if String::from_utf8_lossy(&seen).contains(MARKER) {
+                            break;
+                        }
+                    }
+                    Ok(Some(Err(e))) => return Err(format!("exec stream: {}", e.message())),
+                    Ok(None) => return Err("exec stream ended before the marker".into()),
+                    Err(_) => {
+                        return Err(format!(
+                            "timed out; saw {:?}",
+                            String::from_utf8_lossy(&seen)
+                        ))
+                    }
+                }
+            }
+
+            // A TTY echoes what was typed, which is the other half of proving
+            // the session is interactive rather than a one-shot capture.
+            let text = String::from_utf8_lossy(&seen).to_string();
+            assert!(
+                text.matches(MARKER).count() >= 1,
+                "expected the marker in TTY output; got {text:?}"
+            );
+            Ok::<(), String>(())
+        }
+        .await;
+
+        let _ = rt.remove_container(&id, true, true).await;
+        result.expect("exec round trip");
+    }
+
+    /// Resize is the likeliest place the two runtimes diverge: it is a separate
+    /// endpoint addressed by exec id, and Podman serves it from its
+    /// compatibility layer. Pinning it on both is the whole point of the shared
+    /// suite.
+    pub async fn exec_resize(rt: &dyn ContainerRuntime, names: &Names) {
+        let name = format!("{}-resize", names.container);
+        let Some(id) = long_running(rt, &name).await else {
+            return;
+        };
+
+        let result = async {
+            let attach = rt
+                .exec_start(&id, vec!["/bin/sh".into()], 80, 24)
+                .await
+                .map_err(|e| format!("exec_start: {}", e.message()))?;
+
+            rt.exec_resize(&attach.exec_id, 120, 40)
+                .await
+                .map_err(|e| format!("resize to 120x40: {}", e.message()))?;
+
+            // Degenerate sizes are clamped rather than sent to the daemon.
+            rt.exec_resize(&attach.exec_id, 0, 0)
+                .await
+                .map_err(|e| format!("clamped resize: {}", e.message()))?;
+
+            Ok::<(), String>(())
+        }
+        .await;
+
+        let _ = rt.remove_container(&id, true, true).await;
+        result.expect("exec resize");
+    }
+
+    /// The shell probe must name a path that exists in the image, not assume
+    /// bash.
+    pub async fn detect_shell(rt: &dyn ContainerRuntime, names: &Names) {
+        let name = format!("{}-shell", names.container);
+        let Some(id) = long_running(rt, &name).await else {
+            return;
+        };
+
+        let result = async {
+            let shell = rt
+                .detect_shell(&id)
+                .await
+                .map_err(|e| format!("detect_shell: {}", e.message()))?;
+            assert!(
+                shell.starts_with('/'),
+                "shell must be an absolute path, got {shell:?}"
+            );
+
+            // Whatever it named must actually be executable in this image.
+            let attach = rt
+                .exec_start(&id, vec![shell.clone()], 80, 24)
+                .await
+                .map_err(|e| format!("probed shell {shell} is not runnable: {}", e.message()))?;
+            assert!(!attach.exec_id.is_empty());
+            Ok::<(), String>(())
+        }
+        .await;
+
+        let _ = rt.remove_container(&id, true, true).await;
+        result.expect("detect shell");
+    }
+
+    /// An empty command must be refused here rather than turning into an
+    /// opaque daemon error.
+    pub async fn rejects_empty_exec(rt: &dyn ContainerRuntime) {
+        let err = rt
+            .exec_start("cleat-nonexistent", vec![], 80, 24)
+            .await
+            .expect_err("empty argv must be rejected");
+        assert_eq!(err.kind(), "invalid");
+
+        let err = rt
+            .exec_start("cleat-nonexistent", vec!["   ".into()], 80, 24)
+            .await
+            .expect_err("whitespace-only argv must be rejected");
         assert_eq!(err.kind(), "invalid");
     }
 

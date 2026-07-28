@@ -17,6 +17,8 @@ Built with Rust + Tauri v2 and React/TypeScript. No Electron, no background HTTP
 
 **Containers** — list running and stopped, start / stop / restart / pause / resume / remove, inspect full JSON, health status, and control services inside a container via its init system.
 
+**Interactive terminal** — a real TTY attached to a shell inside a running container, with resize tracking so full-screen programs render correctly. The shell is probed per container, so it works on images without bash.
+
 **Live logs** — real follow mode with search and stdout/stderr filtering, not a one-shot `tail`.
 
 **Live stats** — CPU, memory, network and block I/O streamed once per second with inline sparklines. Memory is page-cache-corrected so it matches what `docker stats` reports.
@@ -90,7 +92,7 @@ Details in [docs/security.md](docs/security.md).
 cd tauri-rs/src-tauri && cargo test
 ```
 
-**54 tests.** Docker and Podman run the *same* integration suite — identical assertions against both backends, which is the only real demonstration that the abstraction holds. It has already caught bugs a single-runtime suite would have missed, including Podman reporting a container state Docker's schema rejects.
+**69 tests.** Docker and Podman run the *same* integration suite — identical assertions against both backends, which is the only real demonstration that the abstraction holds. It has already caught bugs a single-runtime suite would have missed, including Podman reporting a container state Docker's schema rejects.
 
 Tests skip cleanly when a runtime isn't reachable, prefix everything they create with `cleat-test-`, and clean up on failure paths.
 
@@ -110,7 +112,7 @@ Roadmap: [tauri-rs/todo.md](tauri-rs/todo.md).
 
 Working and in use, pre-1.0. Verified against Docker Engine 29.6.1 and Podman 4.9.3 on Linux. Not yet exercised on macOS or Windows.
 
-Known gaps: no create-container UI form (the backend command exists and is tested), no exec-into-container terminal, no image building.
+Known gaps: no create-container UI form (the backend command exists and is tested), no image building, no container file browser.
 
 ## Licence
 

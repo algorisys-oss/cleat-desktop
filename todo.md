@@ -18,7 +18,6 @@ Backend command exists and is tested; only the UI is missing:
 
 Not started:
 
-- [ ] Exec into container (PTY terminal)
 - [ ] Compose per-service logs
 - [ ] Container file browser
 - [ ] Image build from Dockerfile

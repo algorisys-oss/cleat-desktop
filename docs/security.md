@@ -119,6 +119,36 @@ but is still a command the user didn't ask for. Hence the leading-`-` rejection 
 **Whitelist verbs, don't blacklist characters.** The action parameter is matched
 against a fixed set. Adding a new one is a deliberate edit.
 
+**The interactive terminal is a deliberate exception, and it is not a
+regression.** [`exec_start()`](../tauri-rs/src-tauri/src/runtime/engine.rs) takes
+an unconstrained argv, which looks like it contradicts the rule above. It does
+not, and the distinction is worth being explicit about:
+
+- The service-control path takes a value that names *one* thing (a systemd unit)
+  and would otherwise be interpolated into a command the user never asked for.
+  Constraining it removes capability the feature never needed.
+- The terminal's whole purpose is to run a command of the user's choosing. There
+  is no smaller capability that still delivers the feature.
+
+What keeps it sound is that the mechanism is unchanged: `create_exec` receives an
+**argv vector**, never a shell string, so there is no metacharacter parsing to
+subvert — if the user types `;` it reaches the shell *inside the container*,
+which is exactly what a terminal is for. The trust boundary is the container, and
+the user already holds root-equivalent daemon control through this app; a
+terminal grants nothing they could not obtain via `create_container`.
+
+Empty and whitespace-only argv are still rejected (`rejects_empty_exec`), because
+those are bugs rather than intentions.
+
+Two consequences worth knowing:
+
+- **Terminal traffic is base64 over IPC**, not text. This is a correctness
+  measure, not a security one — a `String` would force a lossy UTF-8 decode that
+  corrupts escape sequences and multi-byte characters split across chunks.
+- **Closing a terminal aborts the connection**, which is how the Docker CLI
+  behaves too. A process that ignores its terminal closing can survive as an
+  orphan inside the container until it exits or the container stops.
+
 **Canonicalise paths before use.** `resolve_project_dir()` calls `canonicalize()`
 and checks `is_dir()`.
 

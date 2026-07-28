@@ -9,10 +9,10 @@
 
 mod common;
 
-use common::{suite, Names};
 use cleat_lib::model::RuntimeKind;
 use cleat_lib::runtime::podman::PodmanRuntime;
 use cleat_lib::runtime::ContainerRuntime;
+use common::{suite, Names};
 
 async fn rt() -> Option<(PodmanRuntime, Names)> {
     match PodmanRuntime::connect().await {
@@ -50,31 +50,41 @@ async fn lists_networks() {
 
 #[tokio::test]
 async fn volume_roundtrip() {
-    let Some((rt, names)) = rt().await else { return };
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
     suite::volume_roundtrip(&rt, &names).await;
 }
 
 #[tokio::test]
 async fn network_roundtrip() {
-    let Some((rt, names)) = rt().await else { return };
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
     suite::network_roundtrip(&rt, &names).await;
 }
 
 #[tokio::test]
 async fn container_lifecycle() {
-    let Some((rt, names)) = rt().await else { return };
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
     suite::container_lifecycle(&rt, &names).await;
 }
 
 #[tokio::test]
 async fn stats_stream_reports_cpu() {
-    let Some((rt, names)) = rt().await else { return };
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
     suite::stats_stream(&rt, &names).await;
 }
 
 #[tokio::test]
 async fn log_follow_delivers_output() {
-    let Some((rt, names)) = rt().await else { return };
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
     suite::log_follow(&rt, &names).await;
 }
 
@@ -88,6 +98,38 @@ async fn maps_error_kinds() {
 async fn rejects_injection_in_service_control() {
     let Some((rt, _)) = rt().await else { return };
     suite::rejects_injection(&rt).await;
+}
+
+#[tokio::test]
+async fn exec_roundtrip() {
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
+    suite::exec_roundtrip(&rt, &names).await;
+}
+
+/// Podman serves `/exec/{id}/resize` from its Docker compatibility layer, so
+/// this is the assertion most likely to catch a real divergence.
+#[tokio::test]
+async fn exec_resize() {
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
+    suite::exec_resize(&rt, &names).await;
+}
+
+#[tokio::test]
+async fn detects_a_usable_shell() {
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
+    suite::detect_shell(&rt, &names).await;
+}
+
+#[tokio::test]
+async fn rejects_empty_exec_command() {
+    let Some((rt, _)) = rt().await else { return };
+    suite::rejects_empty_exec(&rt).await;
 }
 
 #[tokio::test]
@@ -141,7 +183,9 @@ async fn uses_a_podman_compose_frontend() {
 /// to `/var/run/docker.sock` and made Podman report Docker's version.
 #[tokio::test]
 async fn is_not_the_docker_daemon() {
-    let Some((podman, _)) = rt().await else { return };
+    let Some((podman, _)) = rt().await else {
+        return;
+    };
     let Ok(docker) = cleat_lib::runtime::docker::DockerRuntime::connect().await else {
         eprintln!("skipping: docker unavailable, nothing to compare against");
         return;
@@ -167,26 +211,23 @@ async fn is_not_the_docker_daemon() {
 async fn copies_an_image_from_docker() {
     use futures_util::StreamExt;
 
-    let Some((podman, _)) = rt().await else { return };
+    let Some((podman, _)) = rt().await else {
+        return;
+    };
     let Ok(docker) = cleat_lib::runtime::docker::DockerRuntime::connect().await else {
         eprintln!("skipping: docker unavailable, nothing to copy from");
         return;
     };
 
     // Smallest tagged image Docker has, to keep the transfer quick.
-    let Some(source) = docker
-        .list_images()
-        .await
-        .ok()
-        .and_then(|mut images| {
-            images.retain(|i| !i.repo_tags.is_empty() && !i.dangling && i.size > 0);
-            images.sort_by_key(|i| i.size);
-            images
-                .into_iter()
-                .next()
-                .and_then(|i| i.repo_tags.into_iter().next())
-        })
-    else {
+    let Some(source) = docker.list_images().await.ok().and_then(|mut images| {
+        images.retain(|i| !i.repo_tags.is_empty() && !i.dangling && i.size > 0);
+        images.sort_by_key(|i| i.size);
+        images
+            .into_iter()
+            .next()
+            .and_then(|i| i.repo_tags.into_iter().next())
+    }) else {
         eprintln!("skipping: docker has no tagged images");
         return;
     };
@@ -196,15 +237,24 @@ async fn copies_an_image_from_docker() {
     let pre_existing = podman
         .list_images()
         .await
-        .map(|imgs| imgs.iter().any(|i| i.repo_tags.iter().any(|t| t.ends_with(&source))))
+        .map(|imgs| {
+            imgs.iter()
+                .any(|i| i.repo_tags.iter().any(|t| t.ends_with(&source)))
+        })
         .unwrap_or(false);
     if pre_existing {
         eprintln!("skipping: {source} already present in podman");
         return;
     }
 
-    let export = docker.export_image(&source).await.expect("export from docker");
-    let mut import = podman.import_image(Box::pin(export)).await.expect("import to podman");
+    let export = docker
+        .export_image(&source)
+        .await
+        .expect("export from docker");
+    let mut import = podman
+        .import_image(Box::pin(export))
+        .await
+        .expect("import to podman");
 
     let mut statuses = Vec::new();
     while let Some(item) = import.next().await {
@@ -212,9 +262,11 @@ async fn copies_an_image_from_docker() {
     }
 
     let after = podman.list_images().await.expect("list podman images");
-    let present = after
-        .iter()
-        .any(|i| i.repo_tags.iter().any(|t| t.ends_with(&source) || *t == source));
+    let present = after.iter().any(|i| {
+        i.repo_tags
+            .iter()
+            .any(|t| t.ends_with(&source) || *t == source)
+    });
 
     // Clean up before asserting, so a failure can't leave the image behind.
     // Safe to remove: we established above that we put it there.
