@@ -145,10 +145,16 @@ src/
 ## Phase 10 — Build & Distribution
 
 - [x] Release binary builds (`npm run tauri build`)
-- [ ] Cross-platform bundles (.deb/.rpm/.AppImage, .dmg, .msi)
+- [x] Cross-platform bundles (.deb/.rpm/.AppImage, .dmg, .msi) — built by CI,
+      one runner per platform; Tauri cannot cross-compile these locally
+- [x] CI/CD pipeline for releases — `.github/workflows/release.yml`, triggered
+      by a `v*` tag, which `/shipit` pushes after bumping the version
+- [x] Version shown in the UI status bar, incremented on every release
 - [ ] Auto-update mechanism (Tauri updater)
-- [ ] CI/CD pipeline for releases
-- [ ] Application signing
+- [ ] Application signing — nothing is signed, so Gatekeeper and SmartScreen
+      both object to released builds
+- [ ] Verify the macOS and Windows bundles actually run (they compile in CI;
+      nobody has launched them)
 
 ---
 

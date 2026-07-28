@@ -87,6 +87,17 @@ npm run tauri dev
 >
 > Launching from a normal (non-snap) terminal avoids it entirely.
 
+## Installing a release
+
+Prebuilt executables for Linux, macOS and Windows are published to
+[Releases](https://github.com/algorisys-oss/cleat-desktop/releases) — `.deb`,
+`.rpm` and `.AppImage` for Linux, `.dmg` for both Apple silicon and Intel, and
+`.msi`/`.exe` for Windows.
+
+They are **not code-signed**. macOS needs
+`xattr -dr com.apple.quarantine /Applications/Cleat.app` after installing, and
+Windows SmartScreen warns on first run.
+
 ## Building a production executable
 
 ```sh

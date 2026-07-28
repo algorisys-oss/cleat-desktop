@@ -151,6 +151,8 @@ function Shell() {
           onSelect={switchTo}
           onRefresh={refreshRuntimes}
         />
+
+        <StatusBar />
       </aside>
 
       <main className="min-w-0 flex-1 overflow-hidden bg-surface-0">
@@ -177,6 +179,25 @@ function Shell() {
           </div>
         )}
       </main>
+    </div>
+  );
+}
+
+/**
+ * Bottom strip of the sidebar. The version comes from `tauri.conf.json` via a
+ * build-time define, so it always matches the bundle that was actually
+ * produced — see `vite.config.ts`. `/shipit` bumps that file.
+ */
+function StatusBar() {
+  return (
+    <div className="flex items-center justify-between border-t border-edge px-3 py-1.5">
+      <span className="text-[10px] text-ink-faint">Cleat</span>
+      <span
+        className="font-mono text-[10px] text-ink-faint"
+        title={`Cleat ${__APP_VERSION__}`}
+      >
+        v{__APP_VERSION__}
+      </span>
     </div>
   );
 }

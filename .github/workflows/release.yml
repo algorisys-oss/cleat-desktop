@@ -1,0 +1,157 @@
+# Build Cleat on every platform and publish a GitHub Release.
+#
+# Tauri bundles for its host platform only — a Linux machine cannot produce a
+# .dmg or .msi — so cross-platform artifacts require one runner per target.
+# That is the entire reason this workflow exists rather than a local script.
+#
+# Triggered by pushing a tag, which `/shipit` does after bumping the version:
+#     git tag v0.1.1 && git push origin v0.1.1
+#
+# Also runnable by hand from the Actions tab (workflow_dispatch) against a tag
+# that already exists.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g. v0.1.1)"
+        required: true
+        type: string
+
+# Needed to create the release and upload assets. Nothing else is granted.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Gate the matrix on the test suite. Publishing a release whose tests were
+  # never run defeats the point of having them, and the unit tests need no
+  # container runtime — the integration tests skip cleanly without one.
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri-rs/src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: tauri-rs/package-lock.json
+
+      - name: Install npm dependencies
+        working-directory: tauri-rs
+        run: npm ci
+
+      - name: Typecheck frontend
+        working-directory: tauri-rs
+        run: npx tsc --noEmit
+
+      - name: Rust tests
+        working-directory: tauri-rs/src-tauri
+        run: cargo test
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs: test
+    strategy:
+      # One platform failing should not discard the artifacts of the others;
+      # a partial release is easier to top up than to rebuild from scratch.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            label: Linux (deb/rpm/AppImage)
+            args: ""
+          - platform: macos-latest
+            label: macOS (Apple silicon)
+            args: "--target aarch64-apple-darwin"
+          - platform: macos-13
+            label: macOS (Intel)
+            args: "--target x86_64-apple-darwin"
+          - platform: windows-latest
+            label: Windows (msi/exe)
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      # Ubuntu 22.04 carries webkit2gtk 4.1, which is what Tauri v2 wants.
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || matrix.platform == 'macos-13' && 'x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri-rs/src-tauri
+          key: ${{ matrix.platform }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: tauri-rs/package-lock.json
+
+      - name: Install npm dependencies
+        working-directory: tauri-rs
+        run: npm ci
+
+      - name: Build and upload to the release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: tauri-rs
+          tagName: ${{ inputs.tag || github.ref_name }}
+          releaseName: Cleat ${{ inputs.tag || github.ref_name }}
+          releaseBody: |
+            Container management for Docker and Podman.
+
+            Pick the artifact for your platform below. Linux users can take the
+            `.deb` or `.rpm` (small — they link the system WebKitGTK) or the
+            `.AppImage` (large, self-contained, no install step).
+
+            **These builds are not code-signed.** macOS Gatekeeper will need
+            `xattr -dr com.apple.quarantine /Applications/Cleat.app`, and
+            Windows SmartScreen will warn on first run.
+
+            Cleat needs a reachable Docker or Podman socket; Podman users may
+            need `systemctl --user start podman.socket`.
+          # Published immediately. Flip to true if you would rather review the
+          # notes before it goes public.
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
