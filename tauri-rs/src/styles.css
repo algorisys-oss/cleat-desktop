@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+/* Dark-first surface palette. The app is a monitoring tool that sits open for
+   long stretches, so the defaults lean dark and low-contrast-background. */
+@theme {
+  --color-surface-0: oklch(0.17 0.012 265);
+  --color-surface-1: oklch(0.21 0.014 265);
+  --color-surface-2: oklch(0.26 0.016 265);
+  --color-surface-3: oklch(0.32 0.018 265);
+  --color-edge: oklch(0.36 0.018 265);
+  --color-ink: oklch(0.95 0.005 265);
+  --color-ink-dim: oklch(0.72 0.012 265);
+  --color-ink-faint: oklch(0.58 0.014 265);
+
+  --color-accent: oklch(0.68 0.15 250);
+  --color-ok: oklch(0.72 0.16 155);
+  --color-warn: oklch(0.78 0.15 80);
+  --color-danger: oklch(0.65 0.19 25);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-surface-0);
+  color: var(--color-ink);
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+  font-size: 14px;
+  overflow: hidden;
+}
+
+/* Scrollbars that don't fight the dark surfaces. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-surface-3) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-surface-3);
+  border-radius: 6px;
+  border: 2px solid var(--color-surface-0);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Tauri drag region needs this to avoid text selection while dragging. */
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+}

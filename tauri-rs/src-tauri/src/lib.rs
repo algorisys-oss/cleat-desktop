@@ -1,0 +1,91 @@
+mod commands;
+mod state;
+
+// Public so the integration tests in tests/ can drive a real runtime.
+pub mod error;
+pub mod model;
+pub mod runtime;
+
+use state::AppState;
+use tauri::Manager;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .manage(AppState::new())
+        .setup(|app| {
+            // Pick a working runtime in the background so the window paints
+            // immediately instead of blocking on daemon probes.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let state = handle.state::<AppState>();
+                let selected = state.auto_select().await;
+                use tauri::Emitter;
+                let _ = handle.emit("runtime:ready", selected);
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            // runtime / system
+            commands::list_runtimes,
+            commands::current_runtime,
+            commands::select_runtime,
+            commands::system_summary,
+            commands::ping_runtime,
+            // containers
+            commands::list_containers,
+            commands::inspect_container,
+            commands::start_container,
+            commands::stop_container,
+            commands::restart_container,
+            commands::pause_container,
+            commands::unpause_container,
+            commands::remove_container,
+            commands::create_container,
+            commands::container_health,
+            commands::container_logs,
+            commands::container_stats,
+            commands::list_container_services,
+            commands::control_container_service,
+            // images
+            commands::list_images,
+            commands::remove_image,
+            commands::inspect_image,
+            commands::image_history,
+            commands::prune_images,
+            // networks
+            commands::list_networks,
+            commands::create_network,
+            commands::remove_network,
+            commands::inspect_network,
+            commands::connect_network,
+            commands::disconnect_network,
+            // volumes
+            commands::list_volumes,
+            commands::create_volume,
+            commands::remove_volume,
+            commands::inspect_volume,
+            commands::prune_volumes,
+            // compose
+            commands::compose_services,
+            commands::compose_up,
+            commands::compose_down,
+            commands::compose_restart,
+            commands::compose_exec,
+            commands::stop_compose_exec,
+            // streaming
+            commands::follow_logs,
+            commands::stop_follow_logs,
+            commands::stream_stats,
+            commands::stop_stream_stats,
+            commands::pull_image,
+            commands::stop_pull,
+            commands::copy_image,
+            commands::stop_copy_image,
+            commands::stop_all_streams,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
