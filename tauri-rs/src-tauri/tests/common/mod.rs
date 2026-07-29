@@ -230,11 +230,17 @@ pub mod suite {
     /// it, so a developer's existing images survive.
     pub async fn pull_public_image_with_ambient_credentials(rt: &dyn ContainerRuntime) {
         const REFERENCE: &str = "hello-world:latest";
+        const REPO: &str = "hello-world";
 
+        // Compared with `repo_matches`, not equality: Podman reports fully
+        // qualified names (`docker.io/library/hello-world:latest`) where Docker
+        // reports `hello-world:latest`. An equality check here passes on Docker
+        // and fails on Podman, which is precisely the runtime-specific
+        // assumption the shared suite exists to prevent.
         let had_it = |images: &[cleat_lib::model::Image]| {
             images
                 .iter()
-                .any(|i| i.repo_tags.iter().any(|t| t == REFERENCE))
+                .any(|i| i.repo_tags.iter().any(|t| repo_matches(t, REPO)))
         };
         let before = rt.list_images().await.expect("list images before pull");
         let preexisting = had_it(&before);
@@ -258,9 +264,12 @@ pub mod suite {
         assert!(had_it(&after), "{REFERENCE} absent after a successful pull");
 
         if !preexisting {
+            // Same reason as `had_it`: match the repository, not the literal
+            // reference, or cleanup silently finds nothing on Podman and the
+            // test leaves an image behind.
             let id = after
                 .iter()
-                .find(|i| i.repo_tags.iter().any(|t| t == REFERENCE))
+                .find(|i| i.repo_tags.iter().any(|t| repo_matches(t, REPO)))
                 .map(|i| i.id.clone())
                 .expect("just-pulled image");
             let _ = rt.remove_image(&id, false).await;
@@ -286,11 +295,17 @@ pub mod suite {
 
         rt.tag_image(&source, TARGET).await.expect("tag image");
 
+        // Everything below identifies the image by id rather than by name.
+        // Names are not runtime-neutral — Podman qualifies them
+        // (`docker.io/library/alpine:latest`) and `ensure_image` may return the
+        // unqualified string it pulled with — so a name comparison here passes
+        // on one runtime and fails on the other. Ids are stable on both.
         let images = rt.list_images().await.expect("list images after tag");
         let tagged = images
             .iter()
-            .any(|i| i.repo_tags.iter().any(|t| t.ends_with("cleat-test-tag:v1")));
-        assert!(tagged, "new tag absent from the image list");
+            .find(|i| i.repo_tags.iter().any(|t| t.ends_with("cleat-test-tag:v1")))
+            .unwrap_or_else(|| panic!("new tag absent from the image list"));
+        let image_id = tagged.id.clone();
 
         // Removing the tag, not the image: other tags on the same layers, and
         // the image this test borrowed, must survive.
@@ -306,8 +321,8 @@ pub mod suite {
             "test tag survived removal"
         );
         assert!(
-            after.iter().any(|i| i.repo_tags.contains(&source)),
-            "removing the test tag took the borrowed image {source} with it"
+            after.iter().any(|i| i.id == image_id),
+            "removing the test tag deleted the borrowed image {source} ({image_id})"
         );
     }
 
