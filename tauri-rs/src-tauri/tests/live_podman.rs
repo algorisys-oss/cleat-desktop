@@ -340,3 +340,11 @@ async fn refuses_a_malformed_tag_target() {
     let Some((rt, _)) = rt().await else { return };
     suite::tag_image_rejects_a_malformed_target(&rt).await;
 }
+
+#[tokio::test]
+async fn generates_kubernetes_manifests_from_a_real_container() {
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
+    suite::generate_kubernetes_manifest(&rt, &names).await;
+}

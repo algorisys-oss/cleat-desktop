@@ -9,7 +9,7 @@ Podman containers. Read [README.md](README.md) for what it does and
 ```
 tauri-rs/               the app (name is scaffold residue, not meaningful)
   src/                  React + TypeScript frontend
-  src-tauri/src/        Rust backend — commands.rs, state.rs, runtime/
+  src-tauri/src/        Rust backend — commands.rs, state.rs, runtime/, k8s/
 scripts/bump-version.sh version bump across all five files
 .github/workflows/      release CI
 ```
@@ -69,6 +69,12 @@ The interactive terminal (`exec_start`) takes unconstrained argv on purpose and
 is *not* a violation of the above; the reasoning is written down in
 docs/security.md and should not be "fixed" without reading it.
 
+**Kubernetes is a parallel subsystem, not a third runtime.** `ContainerRuntime`
+is 40 methods about containers, images, networks and volumes; a cluster has none
+of those as first-class objects. `src/k8s/` has its own client, DTOs and
+commands. The two meet only in `k8s/generate.rs`, and only in that direction.
+Its live tests need a reachable cluster and skip without one.
+
 **Docker and Podman run the same test suite.** Assertions live in
 `tests/common/mod.rs` and both backends run them. A test that special-cases a
 runtime proves nothing about the abstraction. Tests skip cleanly when a runtime
@@ -95,6 +101,10 @@ then loads modules that drag in the snap's older glibc and the app dies with
 `<select>` with the light system theme, giving unreadable text regardless of the
 element's classes. The popup list is a platform widget and does not inherit the
 select's Tailwind classes, so option colours are set separately in `styles.css`.
+
+**Podman's socket is usually inactive on this machine**, so `cargo test` runs
+only half the suite and a Podman-only bug ships. `systemctl --user start
+podman.socket` first — that is exactly how the v0.3.0 release broke.
 
 **`cargo fmt` reformats files beyond the ones you touched** — the repo is not
 currently fmt-clean. Don't sweep unrelated churn into a feature commit.

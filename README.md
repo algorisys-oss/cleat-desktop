@@ -39,6 +39,14 @@ Built with Rust + Tauri v2 and React/TypeScript. No Electron, no background HTTP
 
 **Volumes** — list with sizes, create, inspect, prune, remove. Filters to just the anonymous ones containers created for themselves, which is the pile that actually accumulates.
 
+**Kubernetes** — reads the same kubeconfig `kubectl` does, including its auth plugins, so a cluster you can already reach works without being set up twice. Context switcher with reachability and server version, namespace filter, and tables for pods, deployments, services and nodes. Pod status is what `kubectl` shows rather than `status.phase`, so `CrashLoopBackOff` surfaces instead of a useless "Running". Streamed pod logs, inspect as JSON, delete.
+
+**Apply YAML** — paste a manifest and see exactly what it would do before it does it. The dry run is server-side: real validation, real admission webhooks, real defaulting, nothing persisted. Apply stays disabled until a dry run comes back clean. Works for CRDs the binary has never heard of, because kinds are resolved against the cluster's own API at runtime.
+
+**Deploy a container to a cluster** — generates a Deployment and Service from a running container, or from every service in a compose project. Emits a Deployment rather than the bare Pod `podman generate kube` produces: nothing restarts a Pod, nothing rolls it, and it cannot scale. The translation is lossy and says so — bind mounts to paths on this machine, host port bindings, privileged containers and environment values that look like secrets each raise a warning shown above the YAML, before anything is applied.
+
+**Light and dark themes** — a bulb in the sidebar footer. Every text colour in both palettes is held to WCAG AA against both background surfaces, verified by converting OKLCH to sRGB and computing the ratio rather than by eye.
+
 **Compose** — pick a project directory, bring stacks up and down, restart individual services, with live streaming output and a working Cancel button.
 
 **Activity log** — every call Cleat makes to a runtime, with arguments, timing and outcome. These are the real Engine API requests, not reconstructed `docker` commands; compose rows show the literal argv because compose is the one subprocess. Values that look like secrets are masked.

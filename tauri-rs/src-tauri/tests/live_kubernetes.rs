@@ -201,3 +201,91 @@ async fn inspects_a_pod_as_json() {
         "inspect returned a different pod"
     );
 }
+
+/// A dry run must report what would happen and change nothing.
+///
+/// This is the assertion the whole apply flow rests on: the UI disables Apply
+/// until a dry run comes back clean, so a dry run that silently created things
+/// would make that gate worse than useless.
+#[tokio::test]
+async fn a_dry_run_reports_outcomes_without_creating_anything() {
+    let Some(client) = client().await else { return };
+    const NS: &str = "cleat-test-dryrun";
+    let yaml = format!("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {NS}\n");
+
+    let outcomes = cleat_lib::k8s::manifests::apply(client.clone(), &yaml, None, true)
+        .await
+        .expect("dry run");
+    assert_eq!(outcomes.len(), 1, "{outcomes:?}");
+    assert_eq!(outcomes[0].action, "created", "{outcomes:?}");
+
+    let namespaces = resources::list_namespaces(client)
+        .await
+        .expect("list namespaces");
+    assert!(
+        !namespaces.iter().any(|n| n.name == NS),
+        "the dry run actually created {NS}"
+    );
+}
+
+/// Apply, confirm it landed, then delete — the full round trip against a real
+/// API server, including the discovery step that resolves kind to endpoint.
+#[tokio::test]
+async fn applies_and_deletes_a_manifest() {
+    let Some(client) = client().await else { return };
+    const NS: &str = "cleat-test-apply";
+    let yaml = format!(
+        "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {NS}\n  labels:\n    cleat-test: \"true\"\n"
+    );
+
+    let created = cleat_lib::k8s::manifests::apply(client.clone(), &yaml, None, false)
+        .await
+        .expect("apply");
+    assert_eq!(created[0].action, "created", "{created:?}");
+
+    let namespaces = resources::list_namespaces(client.clone())
+        .await
+        .expect("list namespaces");
+    assert!(
+        namespaces.iter().any(|n| n.name == NS),
+        "{NS} absent after a successful apply"
+    );
+
+    // Re-applying the same document is `configured`, not a second `created` —
+    // server-side apply is idempotent and the outcome has to say so.
+    let again = cleat_lib::k8s::manifests::apply(client.clone(), &yaml, None, false)
+        .await
+        .expect("re-apply");
+    assert_eq!(again[0].action, "configured", "{again:?}");
+
+    let deleted = cleat_lib::k8s::manifests::delete(client.clone(), &yaml, None)
+        .await
+        .expect("delete");
+    assert_eq!(deleted[0].action, "deleted", "{deleted:?}");
+
+    // Deleting what is already gone is the desired state, not a failure.
+    let twice = cleat_lib::k8s::manifests::delete(client, &yaml, None)
+        .await
+        .expect("delete twice");
+    assert!(
+        twice[0].action == "unchanged" || twice[0].action == "deleted",
+        "second delete should be quiet, got {twice:?}"
+    );
+}
+
+/// A kind the cluster does not serve must fail with a message naming it,
+/// rather than a discovery panic or a generic 404.
+#[tokio::test]
+async fn an_unknown_kind_fails_with_a_useful_message() {
+    let Some(client) = client().await else { return };
+    let yaml = "apiVersion: nonsense.example.com/v1\nkind: Widget\nmetadata:\n  name: w\n";
+    let outcomes = cleat_lib::k8s::manifests::apply(client, yaml, None, true)
+        .await
+        .expect("apply returns per-document outcomes rather than failing whole");
+    assert_eq!(outcomes[0].action, "failed", "{outcomes:?}");
+    let error = outcomes[0].error.as_deref().unwrap_or_default();
+    assert!(
+        error.contains("Widget") || error.contains("nonsense.example.com"),
+        "error should name the unresolvable kind, got {error:?}"
+    );
+}

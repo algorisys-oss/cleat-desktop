@@ -1160,14 +1160,8 @@ pub async fn k8s_follow_pod_logs(
     channel: String,
 ) -> AppResult<()> {
     let client = state.kube_client().await?;
-    let mut stream = resources::follow_pod_logs(
-        client,
-        &namespace,
-        &name,
-        container.as_deref(),
-        tail,
-    )
-    .await?;
+    let mut stream =
+        resources::follow_pod_logs(client, &namespace, &name, container.as_deref(), tail).await?;
 
     let key = format!("k8s-logs:{namespace}/{name}");
     let handle = tokio::spawn(async move {

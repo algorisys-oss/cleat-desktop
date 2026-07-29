@@ -178,7 +178,11 @@ fn env_from(config: &Value, warnings: &mut Vec<Warning>) -> Vec<(String, String)
 
 /// Container ports, from the exposed set the image declares plus anything
 /// published on the host.
-fn ports_from(config: &Value, host_config: &Value, warnings: &mut Vec<Warning>) -> Vec<(i32, String)> {
+fn ports_from(
+    config: &Value,
+    host_config: &Value,
+    warnings: &mut Vec<Warning>,
+) -> Vec<(i32, String)> {
     let mut ports: Vec<(i32, String)> = Vec::new();
 
     let mut add = |spec: &str| {
@@ -497,7 +501,10 @@ mod tests {
         assert_eq!(sanitize_name("/oracle_frontend_1"), "oracle-frontend-1");
         assert_eq!(sanitize_name("Web.Server"), "web-server");
         assert_eq!(sanitize_name("--weird--"), "weird");
-        assert_eq!(sanitize_name("tickethub/control_plane"), "tickethub-control-plane");
+        assert_eq!(
+            sanitize_name("tickethub/control_plane"),
+            "tickethub-control-plane"
+        );
     }
 
     /// Consecutive separators must collapse; `a__b` becoming `a--b` is legal but
@@ -519,7 +526,10 @@ mod tests {
     fn a_name_of_only_punctuation_still_produces_something_valid() {
         let name = sanitize_name("!!!");
         assert!(!name.is_empty());
-        assert!(name.starts_with(|c: char| c.is_ascii_alphanumeric()), "{name}");
+        assert!(
+            name.starts_with(|c: char| c.is_ascii_alphanumeric()),
+            "{name}"
+        );
     }
 
     #[test]
@@ -617,7 +627,11 @@ mod tests {
 
     #[test]
     fn a_renamed_container_says_so() {
-        let v = inspect("/Oracle_Frontend_1", json!({ "Image": "busybox" }), json!({}));
+        let v = inspect(
+            "/Oracle_Frontend_1",
+            json!({ "Image": "busybox" }),
+            json!({}),
+        );
         let out = from_inspect(&v, &Options::default()).expect("generates");
         let warning = out
             .warnings
@@ -679,7 +693,12 @@ mod tests {
         let docs: Vec<serde_yaml::Value> = serde_yaml::Deserializer::from_str(&out.yaml)
             .map(|d| serde_yaml::Value::deserialize(d).expect("each document parses"))
             .collect();
-        assert_eq!(docs.len(), 2, "expected Deployment + Service:\n{}", out.yaml);
+        assert_eq!(
+            docs.len(),
+            2,
+            "expected Deployment + Service:\n{}",
+            out.yaml
+        );
 
         // And the tricky scalars survived as strings rather than being coerced.
         let env = docs[0]
