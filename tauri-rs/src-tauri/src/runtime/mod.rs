@@ -8,6 +8,7 @@
 
 pub mod audit;
 pub mod compose;
+pub mod credentials;
 pub mod docker;
 pub mod engine;
 pub mod podman;

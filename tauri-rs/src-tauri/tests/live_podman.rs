@@ -320,3 +320,11 @@ async fn audit_records_every_exec_request() {
     };
     suite::audit_records_every_exec_request(Box::new(rt), &names).await;
 }
+
+/// Same contract as Docker: whatever login Podman has must not break a public
+/// pull. See the note in `suite`.
+#[tokio::test]
+async fn pulls_a_public_image_with_ambient_credentials() {
+    let Some((rt, _)) = rt().await else { return };
+    suite::pull_public_image_with_ambient_credentials(&rt).await;
+}

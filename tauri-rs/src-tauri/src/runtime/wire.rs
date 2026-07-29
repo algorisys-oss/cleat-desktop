@@ -45,15 +45,26 @@ tokio::task_local! {
 /// uninstrumented client reaching [`crate::runtime::audit`].
 pub fn instrument(docker: Docker) -> Docker {
     docker.with_request_modifier(|req| {
-        // `path_and_query` drops the authority, which over a unix socket is the
-        // hex-encoded socket path — noise, and long enough to bury the path.
-        let target = match req.uri().path_and_query() {
-            Some(paq) => paq.to_string(),
-            None => req.uri().to_string(),
-        };
-        record(format!("{} {target}", req.method()));
+        record(request_line(&req));
         req
     })
+}
+
+/// The line recorded for one request: method and target, nothing else.
+///
+/// Extracted from the modifier so the exclusion can be asserted directly.
+/// Registry credentials travel in the `X-Registry-Auth` header and container
+/// environments travel in bodies; neither is read here, so neither can reach
+/// the activity log. That is the whole reason this is a function and not an
+/// expression inside the closure — see `secrets_in_headers_are_not_recorded`.
+fn request_line<T>(req: &hyper::http::Request<T>) -> String {
+    // `path_and_query` drops the authority, which over a unix socket is the
+    // hex-encoded socket path — noise, and long enough to bury the path.
+    let target = match req.uri().path_and_query() {
+        Some(paq) => paq.to_string(),
+        None => req.uri().to_string(),
+    };
+    format!("{} {target}", req.method())
 }
 
 /// Note a request issued outside bollard.
@@ -107,6 +118,47 @@ mod tests {
     #[test]
     fn recording_outside_a_scope_is_a_no_op() {
         record("GET /_ping".into());
+    }
+
+    /// The activity log is rendered verbatim in a panel the user can copy out
+    /// of, so a credential reaching it would be a credential on a clipboard.
+    /// Pulls send `X-Registry-Auth`; nothing may carry it through.
+    #[test]
+    fn secrets_in_headers_are_not_recorded() {
+        let secret = "eyJ1c2VybmFtZSI6ImFsaWNlIiwicGFzc3dvcmQiOiJzM2NyM3QifQ==";
+        let req = hyper::http::Request::builder()
+            .method("POST")
+            .uri("/v1.51/images/create?fromImage=ghcr.io%2Fowner%2Fapp&tag=1.0")
+            .header("X-Registry-Auth", secret)
+            .header("Authorization", "Bearer some-token")
+            .body(())
+            .expect("builds");
+
+        let line = request_line(&req);
+
+        assert!(!line.contains(secret), "secret leaked into {line:?}");
+        assert!(!line.to_ascii_lowercase().contains("bearer"), "{line:?}");
+        assert!(
+            !line.to_ascii_lowercase().contains("registry-auth"),
+            "{line:?}"
+        );
+        // Still records what it is meant to record.
+        assert_eq!(
+            line,
+            "POST /v1.51/images/create?fromImage=ghcr.io%2Fowner%2Fapp&tag=1.0"
+        );
+    }
+
+    /// Over a unix socket the authority is the hex-encoded socket path, which
+    /// would bury the part a reader cares about.
+    #[test]
+    fn the_authority_is_dropped() {
+        let req = hyper::http::Request::builder()
+            .method("GET")
+            .uri("http://2f7661722f72756e2f646f636b65722e736f636b/v1.51/images/json")
+            .body(())
+            .expect("builds");
+        assert_eq!(request_line(&req), "GET /v1.51/images/json");
     }
 
     /// The log is read as "these are the calls *this* operation made", so a

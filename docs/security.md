@@ -106,10 +106,18 @@ Command::new(program).args(leading).args(args).current_dir(dir)
 docker.create_exec(id, CreateExecOptions { cmd: Some(argv), .. })
 ```
 
-**Compose is the only subprocess.** It has no API — it is a CLI tool — so it is
-the one legitimate exception. Everything else goes through the Engine API. If you
-find yourself reaching for `Command` elsewhere, check whether bollard already
-exposes it.
+**Compose and credential helpers are the only subprocesses.** Neither has an
+API. Compose is a CLI tool; a credential helper *is* a protocol over a process —
+`docker-credential-<name> get`, registry on stdin, JSON on stdout — and there is
+no way to read a secret out of the OS keychain without running the binary that
+owns it. Everything else goes through the Engine API. If you find yourself
+reaching for `Command` elsewhere, check whether bollard already exposes it.
+
+The helper name comes out of the user's own config file and reaches
+`Command::new`, so it is validated as a plain identifier
+(`[A-Za-z0-9_-]+`) before it is spawned — a `credsStore` of `../../evil` must not
+become a path. `refuses_a_helper_name_that_is_not_an_identifier` pins six
+payloads. The registry goes on **stdin**, never argv, so it cannot become a flag.
 
 **Validate anything that reaches argv.** Even without a shell, an unvalidated
 value can become a *flag*. `--force` as a "service name" is not a shell injection
@@ -222,7 +230,20 @@ disk.
   can this app, by design. It is a management tool.
 - **Container images are not scanned.** Vulnerability scanning (Trivy/Grype) is
   on the roadmap, not implemented.
-- **Registry credentials are not managed.** Pulls use the daemon's existing auth;
-  we pass `None` for credentials and never read `~/.docker/config.json`.
+- **Registry credentials are read, never stored.** Cleat has no credential store
+  of its own. It resolves what `docker login` / `podman login` already wrote —
+  `~/.docker/config.json`, Podman's `auth.json`, or whichever helper owns the
+  secret — and hands it to the daemon for the length of one pull. There is no
+  second copy to leak or to go stale. Cleat cannot log you in or out; use the
+  CLI for that.
+- **Credentials never reach the activity log.** They travel in the
+  `X-Registry-Auth` header, and the capture hook in `wire.rs` reads only method
+  and path. `secrets_in_headers_are_not_recorded` asserts a request carrying
+  both `X-Registry-Auth` and `Authorization` records neither.
+- **Listing logins does not unlock anything.** The registries panel and the pull
+  dialog report which registry owns a credential without invoking its helper, so
+  neither can make the OS prompt for a keychain password. The cost is that a
+  helper-backed registry shows no username — Cleat knows the credential is there
+  without having read it.
 - **No formal audit** has been performed. The claims above describe specific
   defects fixed and specific tests that pin them.

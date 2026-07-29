@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import * as api from "../api";
 import { useBusyMap, useDebounced, usePolled, useSelection } from "../hooks";
-import type { Image, ImageTransferProgress, PullProgress, RuntimeInfo, RuntimeKind } from "../types";
+import type {
+  Image,
+  ImageTransferProgress,
+  PullProgress,
+  RegistryLogin,
+  RuntimeInfo,
+  RuntimeKind,
+} from "../types";
 import {
   Badge,
   BulkBar,
@@ -412,6 +419,29 @@ function PullModal({ onClose }: { onClose: () => void }) {
   // Cancel a pull still in flight if the modal unmounts.
   useEffect(() => () => dispose?.(), [dispose]);
 
+  // Which registry this reference resolves to, and whether the runtime has a
+  // login for it. Shown before the pull starts so a 401 on a private image is
+  // diagnosable here rather than from the daemon's logs. Debounced because it
+  // re-resolves per keystroke; it reads config files and never invokes a
+  // credential helper, so it cannot trigger a keychain prompt.
+  const [identity, setIdentity] = useState<RegistryLogin | null>(null);
+  const debouncedName = useDebounced(name, 300);
+  useEffect(() => {
+    const reference = debouncedName.trim();
+    if (!reference) {
+      setIdentity(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .registryIdentity(reference)
+      .then((i) => !cancelled && setIdentity(i))
+      .catch(() => !cancelled && setIdentity(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedName]);
+
   const start = async () => {
     const image = name.trim();
     if (!image) return;
@@ -498,6 +528,26 @@ function PullModal({ onClose }: { onClose: () => void }) {
           <p className="mt-1 text-xs text-ink-faint">
             Without a tag, <code className="text-ink-dim">:latest</code> is used.
           </p>
+          {identity && (
+            <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+              <span className="text-ink-faint">{identity.registry}</span>
+              {identity.source === null ? (
+                <>
+                  <Badge tone="idle">anonymous</Badge>
+                  <span className="text-ink-faint">
+                    no login found — public images only
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Badge tone="ok">
+                    {identity.username ? `as ${identity.username}` : "authenticated"}
+                  </Badge>
+                  <span className="text-ink-faint">via {identity.source}</span>
+                </>
+              )}
+            </p>
+          )}
         </div>
 
         {(pulling || overall !== null) && (

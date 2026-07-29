@@ -47,6 +47,21 @@ export interface Image {
   dangling: boolean;
 }
 
+/**
+ * A registry login Cleat found in the runtime's own config.
+ *
+ * Cleat never stores credentials — it reads what `docker login` / `podman
+ * login` already wrote. `source` is where the credential lives; `null` means
+ * there is none and the pull will be anonymous. `username` is `null` when a
+ * credential helper owns the secret, since reading it would prompt for a
+ * keychain unlock.
+ */
+export interface RegistryLogin {
+  registry: string;
+  username: string | null;
+  source: string | null;
+}
+
 export interface Network {
   id: string;
   name: string;

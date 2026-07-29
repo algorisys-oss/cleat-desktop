@@ -186,6 +186,38 @@ pub async fn prune_images(state: State<'_, AppState>) -> AppResult<u64> {
     state.runtime().await?.prune_images().await
 }
 
+/// Registries the active runtime has a login for.
+///
+/// Names and sources only — never a secret. Credential helpers are not invoked,
+/// so opening the panel cannot make the OS prompt for a keychain unlock.
+#[tauri::command]
+pub async fn registry_logins(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<runtime::credentials::RegistryLogin>> {
+    let kind = state
+        .current_kind()
+        .await
+        .ok_or_else(|| AppError::RuntimeUnavailable("no runtime selected".into()))?;
+    Ok(runtime::credentials::list_logins(kind))
+}
+
+/// Which registry `image` would authenticate against, and as whom.
+///
+/// Lets the pull dialog say "as alice" before starting, so a 401 on a private
+/// image is diagnosable without reading daemon logs. Reports the identity, not
+/// the credential.
+#[tauri::command]
+pub async fn registry_identity(
+    state: State<'_, AppState>,
+    image: String,
+) -> AppResult<runtime::credentials::RegistryLogin> {
+    let kind = state
+        .current_kind()
+        .await
+        .ok_or_else(|| AppError::RuntimeUnavailable("no runtime selected".into()))?;
+    Ok(runtime::credentials::identity_for(kind, &image))
+}
+
 // ==================================================================== networks
 
 #[tauri::command]

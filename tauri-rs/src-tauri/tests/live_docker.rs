@@ -202,3 +202,11 @@ async fn audit_records_every_exec_request() {
     };
     suite::audit_records_every_exec_request(Box::new(rt), &names).await;
 }
+
+/// Regression guard for the credential wiring: an ambient Docker Hub login must
+/// not turn a working public pull into a 401.
+#[tokio::test]
+async fn pulls_a_public_image_with_ambient_credentials() {
+    let Some((rt, _)) = rt().await else { return };
+    suite::pull_public_image_with_ambient_credentials(&rt).await;
+}

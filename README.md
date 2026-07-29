@@ -29,6 +29,8 @@ Built with Rust + Tauri v2 and React/TypeScript. No Electron, no background HTTP
 
 **Images** — list, pull with real per-layer progress, inspect, layer history, prune, remove.
 
+**Private registries** — pulls use the login you already have. Cleat reads `docker login` / `podman login` state, including credentials held in the OS keychain by a credential helper, and never stores a copy of its own. The pull dialog names the registry and the identity it will use before you start, so a 401 is diagnosable without reading daemon logs.
+
 **Copy images between runtimes** — Docker and Podman keep completely separate image stores. Cleat streams an image from one into the other over the Engine API: no temp file, no CLI, nothing buffered to disk.
 
 **Networks** — list with subnets and *attached containers*, create (bridge / macvlan / ipvlan / overlay, internal), inspect, remove.

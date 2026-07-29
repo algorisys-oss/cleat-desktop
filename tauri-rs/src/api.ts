@@ -16,6 +16,7 @@ import type {
   LogLine,
   Network,
   PullProgress,
+  RegistryLogin,
   RuntimeInfo,
   RuntimeKind,
   ServiceEntry,
@@ -62,6 +63,10 @@ export const removeImage = (id: string, force = false) =>
 export const inspectImage = (id: string) => invoke<unknown>("inspect_image", { id });
 export const imageHistory = (id: string) => invoke<unknown>("image_history", { id });
 export const pruneImages = () => invoke<number>("prune_images");
+export const registryLogins = () => invoke<RegistryLogin[]>("registry_logins");
+/** Which registry `image` authenticates against, and as whom. Never a secret. */
+export const registryIdentity = (image: string) =>
+  invoke<RegistryLogin>("registry_identity", { image });
 
 // -------------------------------------------------------------------- networks
 

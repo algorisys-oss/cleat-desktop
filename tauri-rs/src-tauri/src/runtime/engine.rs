@@ -517,6 +517,12 @@ impl Engine {
             ..Default::default()
         };
 
+        // Whatever the user has already logged in to, for this runtime. `None`
+        // is the ordinary case and pulls anonymously; a private image without a
+        // login fails at the daemon with its own 401, which is the right error
+        // to show rather than one invented here.
+        let credentials = crate::runtime::credentials::resolve(self.kind, &image).await;
+
         let label = image.clone();
         // Per-layer byte counters, so `overall` reflects the whole pull rather
         // than whichever layer reported last.
@@ -525,7 +531,7 @@ impl Engine {
 
         let stream = self
             .docker
-            .create_image(Some(opts), None, None)
+            .create_image(Some(opts), None, credentials)
             .map(move |item| match item {
                 Ok(info) => {
                     let status = info.status.clone().unwrap_or_default();

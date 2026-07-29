@@ -218,6 +218,55 @@ pub mod suite {
         }
     }
 
+    /// A public image still pulls once credentials are attached.
+    ///
+    /// Pulls now send whatever login the runtime has for the registry, so on a
+    /// machine that *is* logged in to Docker Hub every public pull carries a
+    /// credential it did not carry before. An expired or malformed one turns a
+    /// working anonymous pull into a 401, which is a regression the resolver's
+    /// own unit tests cannot see — they never reach a registry.
+    ///
+    /// Uses a tiny official image, and removes it only if this test introduced
+    /// it, so a developer's existing images survive.
+    pub async fn pull_public_image_with_ambient_credentials(rt: &dyn ContainerRuntime) {
+        const REFERENCE: &str = "hello-world:latest";
+
+        let had_it = |images: &[cleat_lib::model::Image]| {
+            images
+                .iter()
+                .any(|i| i.repo_tags.iter().any(|t| t == REFERENCE))
+        };
+        let before = rt.list_images().await.expect("list images before pull");
+        let preexisting = had_it(&before);
+
+        let mut stream = rt.pull_image(REFERENCE).await.expect("start pull");
+        let mut failure: Option<String> = None;
+        while let Some(event) = stream.next().await {
+            let progress = event.expect("pull stream item");
+            if let Some(error) = progress.error {
+                failure = Some(error);
+            }
+        }
+        assert!(
+            failure.is_none(),
+            "pulling a public image failed with credentials attached: {}. \
+             An ambient registry login should never make a public pull fail.",
+            failure.unwrap_or_default()
+        );
+
+        let after = rt.list_images().await.expect("list images after pull");
+        assert!(had_it(&after), "{REFERENCE} absent after a successful pull");
+
+        if !preexisting {
+            let id = after
+                .iter()
+                .find(|i| i.repo_tags.iter().any(|t| t == REFERENCE))
+                .map(|i| i.id.clone())
+                .expect("just-pulled image");
+            let _ = rt.remove_image(&id, false).await;
+        }
+    }
+
     pub async fn list_networks(rt: &dyn ContainerRuntime) {
         let networks = rt.list_networks().await.expect("list networks");
         assert!(

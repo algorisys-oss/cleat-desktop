@@ -61,6 +61,8 @@ pub fn run() {
             commands::inspect_image,
             commands::image_history,
             commands::prune_images,
+            commands::registry_logins,
+            commands::registry_identity,
             // networks
             commands::list_networks,
             commands::create_network,
