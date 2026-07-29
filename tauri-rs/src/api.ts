@@ -64,6 +64,9 @@ export const inspectImage = (id: string) => invoke<unknown>("inspect_image", { i
 export const imageHistory = (id: string) => invoke<unknown>("image_history", { id });
 export const pruneImages = () => invoke<number>("prune_images");
 export const registryLogins = () => invoke<RegistryLogin[]>("registry_logins");
+/** Point a second reference at an existing image. Cheap; copies nothing. */
+export const tagImage = (source: string, target: string) =>
+  invoke<void>("tag_image", { source, target });
 /** Which registry `image` authenticates against, and as whom. Never a secret. */
 export const registryIdentity = (image: string) =>
   invoke<RegistryLogin>("registry_identity", { image });
@@ -183,6 +186,26 @@ export function subscribePull(
     "pull",
     (channel) => invoke<void>("pull_image", { image, channel }),
     () => invoke<boolean>("stop_pull", { image }),
+    onProgress,
+    onEnd,
+  );
+}
+
+/**
+ * Push a reference, streaming the daemon's progress.
+ *
+ * Reports the same shape as a pull, minus `overall` — push events carry no
+ * layer id, so there is nothing honest to compute a percentage from.
+ */
+export function subscribePush(
+  image: string,
+  onProgress: (p: PullProgress) => void,
+  onEnd?: (error: string | null) => void,
+) {
+  return openStream<PullProgress>(
+    "push",
+    (channel) => invoke<void>("push_image", { image, channel }),
+    () => invoke<boolean>("stop_push", { image }),
     onProgress,
     onEnd,
   );

@@ -666,6 +666,83 @@ pub async fn stop_pull(state: State<'_, AppState>, image: String) -> AppResult<b
     Ok(state.stop_stream(&format!("pull:{image}")).await)
 }
 
+#[tauri::command]
+pub async fn tag_image(
+    state: State<'_, AppState>,
+    source: String,
+    target: String,
+) -> AppResult<()> {
+    state.runtime().await?.tag_image(&source, &target).await
+}
+
+/// Push `image`, streaming the daemon's progress onto `channel`.
+///
+/// Structurally identical to [`pull_image`] — same in-band failure handling,
+/// same registration so it can be cancelled — because it is the same kind of
+/// long-running one-way stream. The one difference is that push events carry no
+/// overall fraction; see `Engine::push_image`.
+#[tauri::command]
+pub async fn push_image(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    image: String,
+    channel: String,
+) -> AppResult<()> {
+    let rt = state.runtime().await?;
+    let mut stream = rt.push_image(&image).await?;
+    let label = image.clone();
+
+    let handle = tokio::spawn(async move {
+        let mut failure: Option<String> = None;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(mut progress) => {
+                    // A 200 response can still carry a failure in-band — a
+                    // denied push reports `errorDetail` and then simply stops.
+                    if let Some(err) = progress.error.clone() {
+                        failure = Some(err);
+                    }
+                    progress.done = false;
+                    if app.emit(&channel, progress).is_err() {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    failure = Some(e.message());
+                    break;
+                }
+            }
+        }
+
+        let _ = app.emit(
+            &channel,
+            crate::model::PullProgress {
+                image: label,
+                id: None,
+                status: if failure.is_some() {
+                    "failed".into()
+                } else {
+                    "pushed".into()
+                },
+                current: None,
+                total: None,
+                overall: if failure.is_some() { None } else { Some(1.0) },
+                done: true,
+                error: failure.clone(),
+            },
+        );
+        emit_end(&app, &channel, failure);
+    });
+
+    state.register_stream(format!("push:{image}"), handle).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn stop_push(state: State<'_, AppState>, image: String) -> AppResult<bool> {
+    Ok(state.stop_stream(&format!("push:{image}")).await)
+}
+
 /// Emit at most one progress event per this many bytes.
 ///
 /// Chunks arrive at tens of kB, so emitting per chunk would push thousands of

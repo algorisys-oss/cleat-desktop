@@ -368,6 +368,14 @@ impl ContainerRuntime for PodmanRuntime {
         self.engine.pull_image(image).await
     }
 
+    async fn tag_image(&self, source: &str, target: &str) -> AppResult<()> {
+        self.engine.tag_image(source, target).await
+    }
+
+    async fn push_image(&self, reference: &str) -> AppResult<PullStream> {
+        self.engine.push_image(reference).await
+    }
+
     async fn remove_image(&self, id: &str, force: bool) -> AppResult<()> {
         self.engine.remove_image(id, force).await
     }

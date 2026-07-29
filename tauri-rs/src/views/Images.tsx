@@ -47,6 +47,8 @@ export default function Images() {
   const toast = useToast();
 
   const [pullOpen, setPullOpen] = useState(false);
+  const [pushing, setPushing] = useState<Image | null>(null);
+  const [registriesOpen, setRegistriesOpen] = useState(false);
   const [copying, setCopying] = useState<{ image: Image; to: RuntimeKind } | null>(null);
 
   // Other runtimes we could copy an image into. Docker and Podman keep separate
@@ -143,6 +145,9 @@ export default function Images() {
         </Button>
         <Button variant="subtle" size="sm" onClick={() => setPruning(true)}>
           Prune unused
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => setRegistriesOpen(true)}>
+          Registries
         </Button>
         <div className="ml-auto flex items-center gap-2 text-xs text-ink-faint">
           {images.loading && !images.initial && <Spinner size={12} />}
@@ -279,6 +284,19 @@ export default function Images() {
                       >
                         Run
                       </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={i.dangling}
+                        title={
+                          i.dangling
+                            ? "Untagged images cannot be pushed"
+                            : "Tag and push this image to a registry"
+                        }
+                        onClick={() => setPushing(i)}
+                      >
+                        Push
+                      </Button>
                       <Button size="sm" variant="ghost" onClick={() => setInspecting(i)}>
                         Inspect
                       </Button>
@@ -304,6 +322,19 @@ export default function Images() {
       )}
 
       {running && <RunImage image={running} onClose={() => setRunning(null)} />}
+
+      {pushing && (
+        <PushModal
+          image={pushing}
+          onClose={() => {
+            setPushing(null);
+            // A push may have added a tag, which changes the row.
+            images.reload();
+          }}
+        />
+      )}
+
+      {registriesOpen && <RegistriesModal onClose={() => setRegistriesOpen(false)} />}
 
       {inspecting && <ImageInspectModal image={inspecting} onClose={() => setInspecting(null)} />}
 
@@ -599,6 +630,274 @@ function PullModal({ onClose }: { onClose: () => void }) {
           </div>
         )}
       </div>
+    </Modal>
+  );
+}
+
+// ================================================================ push modal
+
+/**
+ * Tag-and-push.
+ *
+ * The tag step is not optional bookkeeping: a registry only accepts references
+ * its own name prefixes, so `nginx:alpine` cannot go anywhere until it is
+ * renamed `ghcr.io/owner/nginx:alpine`. The dialog therefore defaults the target
+ * to the image's current name and tells you where that would land — for most
+ * images the answer is "Docker Hub's library namespace", which you cannot push
+ * to, and seeing that up front beats a 403 two minutes later.
+ */
+function PushModal({ image, onClose }: { image: Image; onClose: () => void }) {
+  const current = primaryTag(image.repoTags);
+  const [target, setTarget] = useState(current === "<untagged>" ? "" : current);
+  const [pushing, setPushing] = useState(false);
+  const [lines, setLines] = useState<string[]>([]);
+  const [finished, setFinished] = useState<{ ok: boolean; message: string } | null>(null);
+  const [dispose, setDispose] = useState<(() => void) | null>(null);
+  const [identity, setIdentity] = useState<RegistryLogin | null>(null);
+  const debouncedTarget = useDebounced(target, 300);
+
+  useEffect(() => () => dispose?.(), [dispose]);
+
+  useEffect(() => {
+    const reference = debouncedTarget.trim();
+    if (!reference) {
+      setIdentity(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .registryIdentity(reference)
+      .then((i) => !cancelled && setIdentity(i))
+      .catch(() => !cancelled && setIdentity(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedTarget]);
+
+  const start = async () => {
+    const reference = target.trim();
+    if (!reference) return;
+    setPushing(true);
+    setLines([]);
+    setFinished(null);
+
+    try {
+      // Tagging first is what makes the push addressable. It is a no-op when
+      // the target already names this image, so re-pushing costs nothing.
+      if (reference !== current) {
+        await api.tagImage(image.id, reference);
+      }
+      const d = await api.subscribePush(reference, (p) => {
+        if (p.status) {
+          setLines((prev) => {
+            // The daemon repeats a status per layer; collapsing consecutive
+            // duplicates keeps the log readable without hiding progress.
+            if (prev[prev.length - 1] === p.status) return prev;
+            return [...prev.slice(-200), p.status];
+          });
+        }
+        if (p.done) {
+          setPushing(false);
+          setFinished(
+            p.error
+              ? { ok: false, message: p.error }
+              : { ok: true, message: `Pushed ${reference}` },
+          );
+        }
+      });
+      setDispose(() => d);
+    } catch (e) {
+      setPushing(false);
+      setFinished({ ok: false, message: errorMessage(e) });
+    }
+  };
+
+  const unpushable = identity?.source === null;
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Push image"
+      subtitle={shortId(image.id)}
+      width="max-w-2xl"
+      footer={
+        <>
+          {pushing ? (
+            <Button
+              variant="danger"
+              onClick={() => {
+                dispose?.();
+                setDispose(null);
+                setPushing(false);
+                setFinished({ ok: false, message: "Push cancelled" });
+              }}
+            >
+              Cancel push
+            </Button>
+          ) : (
+            <Button variant="ghost" onClick={onClose}>
+              Close
+            </Button>
+          )}
+          <Button
+            variant="primary"
+            busy={pushing}
+            disabled={!target.trim() || finished?.ok}
+            onClick={start}
+          >
+            {finished?.ok ? "Done" : finished ? "Retry" : "Push"}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4 px-5 py-4">
+        <div>
+          <label className="mb-1 block text-xs text-ink-dim">Push as</label>
+          <Input
+            autoFocus
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && !pushing && start()}
+            placeholder="ghcr.io/owner/app:1.2.3"
+            className="w-full"
+            disabled={pushing}
+          />
+          <p className="mt-1 text-xs text-ink-faint">
+            The registry is taken from the name. A reference without one goes to
+            Docker Hub under your account.
+          </p>
+          {identity && (
+            <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+              <span className="text-ink-faint">{identity.registry}</span>
+              {unpushable ? (
+                <>
+                  <Badge tone="warn">no login</Badge>
+                  <span className="text-ink-faint">
+                    this will be refused — log in with the CLI first
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Badge tone="ok">
+                    {identity.username ? `as ${identity.username}` : "authenticated"}
+                  </Badge>
+                  <span className="text-ink-faint">via {identity.source}</span>
+                </>
+              )}
+            </p>
+          )}
+          {target.trim() && target.trim() !== current && (
+            <p className="mt-1 text-xs text-ink-faint">
+              Tags {current} as {target.trim()} first. Nothing is copied.
+            </p>
+          )}
+        </div>
+
+        {lines.length > 0 && (
+          <CodeBlock text={lines.join("\n")} autoScroll className="h-48 rounded-md" />
+        )}
+
+        {finished && (
+          <div
+            className={`rounded border px-3 py-2 text-xs ${
+              finished.ok
+                ? "border-ok/30 bg-ok/10 text-ok"
+                : "border-danger/30 bg-danger/10 text-danger"
+            }`}
+          >
+            {finished.message}
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// =========================================================== registries modal
+
+/**
+ * What Cleat can authenticate as, and where it read that from.
+ *
+ * Read-only on purpose. Cleat resolves credentials but never writes them, so
+ * there is nothing to log in or out of here — the panel exists to answer "why
+ * did that push get refused", which is usually "you are logged in with the
+ * other runtime".
+ */
+function RegistriesModal({ onClose }: { onClose: () => void }) {
+  const [logins, setLogins] = useState<RegistryLogin[] | null>(null);
+  const [error, setError] = useState<unknown>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .registryLogins()
+      .then((l) => !cancelled && setLogins(l))
+      .catch((e) => !cancelled && setError(e));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Registry logins"
+      width="max-w-2xl"
+      footer={
+        <Button variant="subtle" onClick={onClose}>
+          Close
+        </Button>
+      }
+    >
+      {error ? (
+        <ErrorNote error={error} />
+      ) : !logins ? (
+        <div className="flex justify-center py-14">
+          <Spinner size={20} />
+        </div>
+      ) : logins.length === 0 ? (
+        <EmptyState
+          title="No registry logins found"
+          hint="Cleat reads what docker login / podman login already wrote. Pulls and pushes will be anonymous until you log in with the CLI."
+        />
+      ) : (
+        <>
+          <Table>
+            <thead>
+              <tr>
+                <Th>Registry</Th>
+                <Th>Identity</Th>
+                <Th>Read from</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {logins.map((l) => (
+                <tr key={l.registry} className="hover:bg-surface-2/50">
+                  <Td className="font-medium text-ink">{l.registry}</Td>
+                  <Td className="text-ink-dim">
+                    {l.username ?? (
+                      <span
+                        className="text-xs text-ink-faint"
+                        title="Held by a credential helper. Reading it would prompt for a keychain unlock, so Cleat does not."
+                      >
+                        held by helper
+                      </span>
+                    )}
+                  </Td>
+                  <Td className="font-mono text-xs text-ink-faint">{l.source}</Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+          <p className="px-5 py-3 text-xs text-ink-faint">
+            Cleat never stores credentials — it reads the ones your runtime
+            already has. Use <code className="text-ink-dim">docker login</code> or{" "}
+            <code className="text-ink-dim">podman login</code> to change them.
+          </p>
+        </>
+      )}
     </Modal>
   );
 }

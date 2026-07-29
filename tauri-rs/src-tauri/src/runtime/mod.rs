@@ -158,6 +158,12 @@ pub trait ContainerRuntime: Send + Sync {
     // -- images ------------------------------------------------------------
     async fn list_images(&self) -> AppResult<Vec<Image>>;
     async fn pull_image(&self, image: &str) -> AppResult<PullStream>;
+    /// Point a second reference at an existing image, so it can be pushed
+    /// somewhere its current name does not allow.
+    async fn tag_image(&self, source: &str, target: &str) -> AppResult<()>;
+    /// Push a reference to the registry its name points at, authenticating from
+    /// the runtime's existing login. Reports the same progress shape as a pull.
+    async fn push_image(&self, reference: &str) -> AppResult<PullStream>;
     async fn remove_image(&self, id: &str, force: bool) -> AppResult<()>;
     async fn image_history(&self, id: &str) -> AppResult<serde_json::Value>;
     async fn inspect_image(&self, id: &str) -> AppResult<serde_json::Value>;

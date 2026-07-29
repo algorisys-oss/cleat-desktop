@@ -328,3 +328,15 @@ async fn pulls_a_public_image_with_ambient_credentials() {
     let Some((rt, _)) = rt().await else { return };
     suite::pull_public_image_with_ambient_credentials(&rt).await;
 }
+
+#[tokio::test]
+async fn tags_an_image_and_removes_the_tag() {
+    let Some((rt, _)) = rt().await else { return };
+    suite::tag_image(&rt).await;
+}
+
+#[tokio::test]
+async fn refuses_a_malformed_tag_target() {
+    let Some((rt, _)) = rt().await else { return };
+    suite::tag_image_rejects_a_malformed_target(&rt).await;
+}

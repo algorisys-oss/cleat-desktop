@@ -473,6 +473,29 @@ impl ContainerRuntime for AuditRuntime {
             .await
     }
 
+    async fn tag_image(&self, source: &str, target: &str) -> AppResult<()> {
+        // The request line is `POST /images/<source>/tag?repo=…&tag=…`, which
+        // carries both — but url-encoded and split across two parameters. The
+        // args are what a reader can actually scan.
+        let shown = args([
+            ("source", source.to_string()),
+            ("target", target.to_string()),
+        ]);
+        self.record(
+            "tag_image",
+            Write,
+            shown,
+            self.inner.tag_image(source, target),
+        )
+        .await
+    }
+
+    async fn push_image(&self, reference: &str) -> AppResult<PullStream> {
+        let shown = args([("reference", reference.to_string())]);
+        self.record("push_image", Write, shown, self.inner.push_image(reference))
+            .await
+    }
+
     async fn remove_image(&self, id: &str, force: bool) -> AppResult<()> {
         self.record(
             "remove_image",

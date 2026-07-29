@@ -233,9 +233,14 @@ disk.
 - **Registry credentials are read, never stored.** Cleat has no credential store
   of its own. It resolves what `docker login` / `podman login` already wrote —
   `~/.docker/config.json`, Podman's `auth.json`, or whichever helper owns the
-  secret — and hands it to the daemon for the length of one pull. There is no
-  second copy to leak or to go stale. Cleat cannot log you in or out; use the
-  CLI for that.
+  secret — and hands it to the daemon for the length of one pull or push. There
+  is no second copy to leak or to go stale. Cleat cannot log you in or out; use
+  the CLI for that.
+- **Push is not separately privileged.** It resolves credentials through the
+  same path as a pull and is refused by the registry when there is no login, so
+  Cleat cannot publish anywhere the CLI on the same machine could not. Push has
+  no automated test for the same reason: verifying it would mean publishing to
+  a real registry under someone's account.
 - **Credentials never reach the activity log.** They travel in the
   `X-Registry-Auth` header, and the capture hook in `wire.rs` reads only method
   and path. `secrets_in_headers_are_not_recorded` asserts a request carrying

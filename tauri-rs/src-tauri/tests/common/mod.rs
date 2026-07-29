@@ -267,6 +267,66 @@ pub mod suite {
         }
     }
 
+    /// Tagging points a second reference at an existing image.
+    ///
+    /// This is the step that makes a push addressable, so getting it wrong
+    /// means every push targets the wrong repository. Uses a `localhost:5000`
+    /// name: it exercises the registry-port case in `split_reference`, and it
+    /// names a registry that cannot be reached by accident.
+    ///
+    /// Push itself has no live test. Verifying it would mean publishing to a
+    /// real registry under someone's account, which a test suite has no
+    /// business doing.
+    pub async fn tag_image(rt: &dyn ContainerRuntime) {
+        let Some(source) = super::ensure_image(rt).await else {
+            eprintln!("skipping tag_image: no image available");
+            return;
+        };
+        const TARGET: &str = "localhost:5000/cleat-test-tag:v1";
+
+        rt.tag_image(&source, TARGET).await.expect("tag image");
+
+        let images = rt.list_images().await.expect("list images after tag");
+        let tagged = images
+            .iter()
+            .any(|i| i.repo_tags.iter().any(|t| t.ends_with("cleat-test-tag:v1")));
+        assert!(tagged, "new tag absent from the image list");
+
+        // Removing the tag, not the image: other tags on the same layers, and
+        // the image this test borrowed, must survive.
+        rt.remove_image(TARGET, false)
+            .await
+            .expect("remove the test tag");
+
+        let after = rt.list_images().await.expect("list images after untag");
+        assert!(
+            !after
+                .iter()
+                .any(|i| i.repo_tags.iter().any(|t| t.ends_with("cleat-test-tag:v1"))),
+            "test tag survived removal"
+        );
+        assert!(
+            after.iter().any(|i| i.repo_tags.contains(&source)),
+            "removing the test tag took the borrowed image {source} with it"
+        );
+    }
+
+    /// An empty or whitespace-only target is refused before it reaches the
+    /// daemon, whose own error for this is unhelpful.
+    pub async fn tag_image_rejects_a_malformed_target(rt: &dyn ContainerRuntime) {
+        let Some(source) = super::ensure_image(rt).await else {
+            eprintln!("skipping tag_image_rejects: no image available");
+            return;
+        };
+        for bad in ["", "   ", "has a space:v1"] {
+            let err = rt.tag_image(&source, bad).await.expect_err(bad);
+            assert!(
+                matches!(err, cleat_lib::error::AppError::Invalid(_)),
+                "{bad:?} gave {err:?}, expected Invalid"
+            );
+        }
+    }
+
     pub async fn list_networks(rt: &dyn ContainerRuntime) {
         let networks = rt.list_networks().await.expect("list networks");
         assert!(

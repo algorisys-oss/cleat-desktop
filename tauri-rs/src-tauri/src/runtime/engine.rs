@@ -503,13 +503,7 @@ impl Engine {
         if image.is_empty() {
             return Err(AppError::Invalid("image name is required".into()));
         }
-        // Default to :latest so the daemon doesn't pull every tag in the repo.
-        let (from_image, tag) = match image.rsplit_once(':') {
-            // A colon in the final path segment is a tag; one before a '/' is a
-            // registry port (localhost:5000/foo), which is not a tag.
-            Some((repo, tag)) if !tag.contains('/') => (repo.to_string(), tag.to_string()),
-            _ => (image.clone(), "latest".to_string()),
-        };
+        let (from_image, tag) = split_reference(&image);
 
         let opts = qp::CreateImageOptions {
             from_image: Some(from_image),
@@ -650,6 +644,94 @@ impl Engine {
             .prune_images(None::<qp::PruneImagesOptions>)
             .await?;
         Ok(res.space_reclaimed.unwrap_or(0).max(0) as u64)
+    }
+
+    /// Point a second reference at an existing image.
+    ///
+    /// Needed before a push, because a registry only accepts what its own name
+    /// prefixes: `nginx:alpine` cannot go anywhere but Docker Hub's `library`,
+    /// so publishing it means tagging it `ghcr.io/owner/nginx:alpine` first.
+    /// Cheap — nothing is copied, the tag is another name for the same layers.
+    pub async fn tag_image(&self, source: &str, target: &str) -> AppResult<()> {
+        let source = source.trim();
+        let target = target.trim();
+        if source.is_empty() || target.is_empty() {
+            return Err(AppError::Invalid(
+                "both the source image and the new tag are required".into(),
+            ));
+        }
+        // The daemon parses this out of a query parameter, so a malformed one is
+        // a 400 rather than anything dangerous — but its message is unhelpful,
+        // and whitespace inside a reference is the mistake people actually make.
+        if target.split_whitespace().count() != 1 {
+            return Err(AppError::Invalid(format!(
+                "{target:?} is not a valid image reference"
+            )));
+        }
+
+        let (repo, tag) = split_reference(target);
+        self.docker
+            .tag_image(
+                source,
+                Some(qp::TagImageOptions {
+                    repo: Some(repo),
+                    tag: Some(tag),
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Push a reference to whichever registry its name points at.
+    ///
+    /// Authenticated the same way [`pull_image`](Self::pull_image) is, from the
+    /// runtime's existing login. Anonymous pushes are refused by every registry
+    /// worth pushing to, so no login means a 401 — reported as the daemon
+    /// worded it rather than guessed at here.
+    ///
+    /// Unlike a pull, there is no overall percentage. The daemon reports layer
+    /// progress on a push too, but bollard's `PushImageInfo` carries no layer
+    /// `id`, so events cannot be attributed to a layer and summing them would
+    /// double-count. Status lines are exact; a fabricated bar would not be.
+    pub async fn push_image(&self, reference: &str) -> AppResult<PullStream> {
+        let reference = reference.trim().to_string();
+        if reference.is_empty() {
+            return Err(AppError::Invalid("image reference is required".into()));
+        }
+        let (repo, tag) = split_reference(&reference);
+        let credentials = crate::runtime::credentials::resolve(self.kind, &repo).await;
+
+        let opts = qp::PushImageOptions {
+            tag: Some(tag),
+            ..Default::default()
+        };
+
+        let label = reference.clone();
+        let stream = self
+            .docker
+            .push_image(&repo, Some(opts), credentials)
+            .map(move |item| match item {
+                Ok(info) => {
+                    let error = info.error_detail.and_then(|d| d.message);
+                    let (current, total) = info
+                        .progress_detail
+                        .as_ref()
+                        .map(|d| (d.current, d.total))
+                        .unwrap_or((None, None));
+                    Ok(PullProgress {
+                        image: label.clone(),
+                        id: None,
+                        status: info.status.clone().unwrap_or_default(),
+                        current,
+                        total,
+                        overall: None,
+                        done: false,
+                        error,
+                    })
+                }
+                Err(e) => Err(AppError::Engine(e)),
+            });
+        Ok(Box::pin(stream))
     }
 
     // -------------------------------------------------------------- networks
@@ -1017,6 +1099,34 @@ impl Engine {
 /// Podman includes it with an empty status. Without this, Podman containers
 /// render an empty health badge in the UI, because the frontend keys off
 /// `health !== "none"`.
+/// Split an image reference into repository and tag, defaulting to `latest`.
+///
+/// The subtlety is that a colon does not always introduce a tag:
+/// `localhost:5000/foo` has one in the *registry*, not the reference. Splitting
+/// on the last colon and rejecting a candidate tag containing `/` handles both,
+/// because a registry port is always followed by a path separator.
+///
+/// A digest reference (`repo@sha256:…`) is left whole as the repository, which
+/// is what the daemon wants: digests are pinned and carry no tag.
+pub fn split_reference(image: &str) -> (String, String) {
+    let image = image.trim();
+    if image.contains('@') {
+        return (image.to_string(), String::new());
+    }
+    match image.rsplit_once(':') {
+        Some((repo, tag)) if !tag.contains('/') && !tag.is_empty() => {
+            (repo.to_string(), tag.to_string())
+        }
+        // A trailing colon means the tag was left off, not that the colon is
+        // part of the repository — carrying it through builds `nginx:` as a
+        // repository name, which the daemon rejects.
+        Some((repo, tag)) if tag.is_empty() && !repo.is_empty() => {
+            (repo.to_string(), "latest".to_string())
+        }
+        _ => (image.to_string(), "latest".to_string()),
+    }
+}
+
 fn normalize_health(raw: Option<String>) -> String {
     match raw {
         Some(s) if !s.trim().is_empty() => s,
@@ -1188,6 +1298,63 @@ pub fn validate_service_name(name: &str) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splits_a_plain_reference() {
+        assert_eq!(
+            split_reference("nginx:alpine"),
+            ("nginx".into(), "alpine".into())
+        );
+        assert_eq!(
+            split_reference("ghcr.io/owner/app:1.2.3"),
+            ("ghcr.io/owner/app".into(), "1.2.3".into())
+        );
+    }
+
+    #[test]
+    fn an_untagged_reference_defaults_to_latest() {
+        assert_eq!(split_reference("nginx"), ("nginx".into(), "latest".into()));
+        assert_eq!(
+            split_reference("ghcr.io/owner/app"),
+            ("ghcr.io/owner/app".into(), "latest".into())
+        );
+    }
+
+    /// The case that makes this worth a function: the colon belongs to the
+    /// registry port, not to a tag. Splitting naively pushes to a repository
+    /// called `localhost` with a tag of `5000/foo`.
+    #[test]
+    fn a_registry_port_is_not_a_tag() {
+        assert_eq!(
+            split_reference("localhost:5000/foo"),
+            ("localhost:5000/foo".into(), "latest".into())
+        );
+        assert_eq!(
+            split_reference("localhost:5000/foo:v2"),
+            ("localhost:5000/foo".into(), "v2".into())
+        );
+    }
+
+    /// Digests are pinned and carry no tag; appending `:latest` to one asks the
+    /// daemon for something that cannot exist.
+    #[test]
+    fn a_digest_reference_is_left_whole() {
+        let digest = "ghcr.io/owner/app@sha256:abc123";
+        let (repo, tag) = split_reference(digest);
+        assert_eq!(repo, digest);
+        assert!(tag.is_empty(), "a digest has no tag, got {tag:?}");
+    }
+
+    /// `nginx:` means the tag was left off. Keeping the colon in the repository
+    /// builds a name the daemon rejects.
+    #[test]
+    fn a_trailing_colon_is_dropped_rather_than_kept() {
+        assert_eq!(split_reference("nginx:"), ("nginx".into(), "latest".into()));
+        assert_eq!(
+            split_reference("localhost:5000/foo:"),
+            ("localhost:5000/foo".into(), "latest".into())
+        );
+    }
 
     #[test]
     fn parses_plain_port_spec() {
