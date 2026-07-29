@@ -121,6 +121,13 @@ pub fn run() {
             commands::k8s_list_config,
             commands::k8s_scale_deployment,
             commands::k8s_restart_deployment,
+            commands::k8s_exec_start,
+            commands::k8s_exec_resize,
+            commands::k8s_exec_stop,
+            commands::k8s_port_forward,
+            commands::k8s_stop_port_forward,
+            commands::k8s_resource_yaml,
+            commands::k8s_list_workloads,
             // activity
             commands::activity_log,
             commands::clear_activity_log,

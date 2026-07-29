@@ -285,6 +285,62 @@ pub async fn ensure_namespace(client: Client, name: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// A live resource as YAML, ready to edit.
+///
+/// Server-managed fields are stripped: `managedFields` alone can be hundreds of
+/// lines of apply bookkeeping, and `resourceVersion`, `uid`, `generation`,
+/// `creationTimestamp` and `status` are all things the server owns and will
+/// reject or ignore on the way back. What remains is roughly what `kubectl
+/// edit` puts in front of you — a document a person can actually read.
+pub async fn fetch_yaml(
+    client: Client,
+    api_version: &str,
+    kind: &str,
+    namespace: Option<&str>,
+    name: &str,
+) -> AppResult<String> {
+    let types = TypeMeta {
+        api_version: api_version.to_string(),
+        kind: kind.to_string(),
+    };
+    let gvk = gvk_of(&types)?;
+
+    let discovery = Discovery::new(client.clone())
+        .run()
+        .await
+        .map_err(|e| AppError::Other(format!("discovering cluster APIs: {e}")))?;
+    let (resource, capabilities) = discovery.resolve_gvk(&gvk).ok_or_else(|| {
+        AppError::NotFound(format!("the cluster does not serve {api_version}/{kind}"))
+    })?;
+
+    let api: Api<DynamicObject> = match capabilities.scope {
+        Scope::Cluster => Api::all_with(client, &resource),
+        Scope::Namespaced => {
+            Api::namespaced_with(client, namespace.unwrap_or("default"), &resource)
+        }
+    };
+
+    let mut object = api
+        .get(name)
+        .await
+        .map_err(|e| AppError::Other(format!("fetching {kind}/{name}: {e}")))?;
+
+    object.metadata.managed_fields = None;
+    object.metadata.resource_version = None;
+    object.metadata.uid = None;
+    object.metadata.generation = None;
+    object.metadata.creation_timestamp = None;
+    object.metadata.self_link = None;
+    object.data.as_object_mut().map(|m| m.remove("status"));
+
+    // `get` does not populate typeMeta, and a document without apiVersion/kind
+    // cannot be applied back — which is the entire point of fetching it.
+    object.types = Some(types);
+
+    serde_yaml::to_string(&object)
+        .map_err(|e| AppError::Other(format!("serialising {kind}/{name}: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

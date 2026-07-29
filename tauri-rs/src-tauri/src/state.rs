@@ -61,6 +61,15 @@ pub struct AppState {
     /// Every operation performed, for the activity panel. Outlives runtime
     /// switches on purpose — "what did I just do" spans them.
     activity: Arc<ActivityLog>,
+    /// Resize channels for live pod exec sessions, keyed like `execs`.
+    ///
+    /// Separate from `ExecSession` because the two runtimes resize differently:
+    /// a container resize is an HTTP call addressed by exec id, while a pod
+    /// resize is a message on the session's own WebSocket, so the sender has to
+    /// outlive the call that created it.
+    kube_resizers: RwLock<
+        HashMap<String, tokio::sync::Mutex<futures_channel::mpsc::Sender<kube::api::TerminalSize>>>,
+    >,
     /// Selected kubeconfig context, when the user has chosen one.
     ///
     /// A name rather than a client: clients are built per call because their
@@ -99,6 +108,39 @@ impl AppState {
     /// has to stay possible so its error can be shown in place.
     pub async fn select_kube_context(&self, context: Option<String>) {
         *self.kube_context.write().await = context;
+    }
+
+    /// Park a pod exec's resize channel for the life of the session.
+    pub async fn register_kube_resizer(
+        &self,
+        key: String,
+        tx: futures_channel::mpsc::Sender<kube::api::TerminalSize>,
+    ) {
+        self.kube_resizers
+            .write()
+            .await
+            .insert(key, tokio::sync::Mutex::new(tx));
+    }
+
+    /// Resize a live pod exec. Silent when the session is gone: a resize racing
+    /// a closed terminal is ordinary, not an error worth surfacing.
+    pub async fn resize_kube_exec(&self, key: &str, cols: u16, rows: u16) -> bool {
+        use futures_util::SinkExt as _;
+        let guard = self.kube_resizers.read().await;
+        let Some(tx) = guard.get(key) else {
+            return false;
+        };
+        let mut tx = tx.lock().await;
+        tx.send(kube::api::TerminalSize {
+            width: cols,
+            height: rows,
+        })
+        .await
+        .is_ok()
+    }
+
+    pub async fn drop_kube_resizer(&self, key: &str) {
+        self.kube_resizers.write().await.remove(key);
     }
 
     /// A client for the selected context.

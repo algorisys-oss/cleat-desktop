@@ -401,3 +401,83 @@ spec:
     let _ = cleat_lib::k8s::manifests::delete(client, &yaml, None).await;
     outcome.expect("scale/restart");
 }
+
+#[tokio::test]
+async fn lists_workloads_of_every_kind() {
+    let Some(client) = client().await else { return };
+    let workloads = resources::list_workloads(client, None)
+        .await
+        .expect("list workloads");
+    for w in &workloads {
+        assert!(!w.name.is_empty());
+        assert!(
+            matches!(
+                w.kind.as_str(),
+                "StatefulSet" | "DaemonSet" | "Job" | "CronJob"
+            ),
+            "unexpected workload kind {:?}",
+            w.kind
+        );
+    }
+    // kube-system runs kube-proxy as a DaemonSet on every cluster kind builds.
+    assert!(
+        workloads.iter().any(|w| w.kind == "DaemonSet"),
+        "expected at least one DaemonSet: {workloads:?}"
+    );
+}
+
+/// Fetched YAML must be applyable, which means it needs apiVersion and kind and
+/// must not carry the server-owned fields the API rejects on the way back.
+#[tokio::test]
+async fn fetched_yaml_is_editable_and_reappliable() {
+    let Some(client) = client().await else { return };
+    let pods = resources::list_pods(client.clone(), Some("kube-system"))
+        .await
+        .expect("list pods");
+    let Some(pod) = pods.first() else {
+        eprintln!("skipping: kube-system has no pods");
+        return;
+    };
+
+    let yaml = cleat_lib::k8s::manifests::fetch_yaml(
+        client.clone(),
+        "v1",
+        "Pod",
+        Some(&pod.namespace),
+        &pod.name,
+    )
+    .await
+    .expect("fetch yaml");
+
+    assert!(yaml.contains("apiVersion: v1"), "{yaml}");
+    assert!(yaml.contains("kind: Pod"), "{yaml}");
+    assert!(yaml.contains(&pod.name), "{yaml}");
+    // Checked by path, not by substring: `ownerReferences` legitimately
+    // contains a `uid`, and stripping those would orphan the object on the way
+    // back. Only the object's *own* server-owned fields must be gone.
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("fetched yaml parses");
+    let meta = parsed.get("metadata").expect("metadata present");
+    for owned in [
+        "managedFields",
+        "resourceVersion",
+        "uid",
+        "creationTimestamp",
+    ] {
+        assert!(
+            meta.get(owned).is_none(),
+            "metadata.{owned} survived into the editable document:\n{yaml}"
+        );
+    }
+    assert!(
+        parsed.get("status").is_none(),
+        "status survived into the editable document:\n{yaml}"
+    );
+
+    // The real proof: it round-trips through the apply path's parser.
+    let outcomes =
+        cleat_lib::k8s::manifests::apply(client, &yaml, Some(&pod.namespace), true).await;
+    assert!(
+        outcomes.is_ok(),
+        "fetched yaml did not survive a dry-run apply: {outcomes:?}"
+    );
+}

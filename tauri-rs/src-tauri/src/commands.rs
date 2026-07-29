@@ -1356,3 +1356,160 @@ pub async fn k8s_restart_deployment(
 ) -> AppResult<()> {
     resources::restart_deployment(state.kube_client().await?, &namespace, &name).await
 }
+
+/// Open a shell inside a pod.
+///
+/// The cluster twin of [`exec_start`], and it reuses the same registries — the
+/// stdin writer goes in `execs`, the output pump in `streams` — so the existing
+/// teardown paths cover it. The resize channel is the one addition, because a
+/// pod resize travels on the session's own socket rather than as its own call.
+// Nine parameters because this is an IPC boundary, not a function anyone
+// calls: every one is a distinct thing the frontend must name, and bundling
+// them into a struct would only move the list into types.ts.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn k8s_exec_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    namespace: String,
+    pod: String,
+    container: Option<String>,
+    argv: Vec<String>,
+    cols: u16,
+    rows: u16,
+    channel: String,
+) -> AppResult<()> {
+    let client = state.kube_client().await?;
+    let session = k8s::exec::attach(
+        client,
+        &namespace,
+        &pod,
+        container.as_deref(),
+        argv,
+        cols,
+        rows,
+    )
+    .await?;
+
+    let k8s::exec::PodExec {
+        mut output,
+        stdin,
+        resize,
+    } = session;
+
+    // Registered before the pump starts, for the same reason the container path
+    // does it: a shell that exits immediately would otherwise emit its end
+    // frame while the frontend still has no session to tear down.
+    state
+        .register_exec(channel.clone(), format!("pod:{namespace}/{pod}"), stdin)
+        .await;
+    if let Some(tx) = resize {
+        state.register_kube_resizer(channel.clone(), tx).await;
+    }
+
+    let pump_channel = channel.clone();
+    let handle = tokio::spawn(async move {
+        while let Some(item) = output.next().await {
+            match item {
+                Ok(bytes) => {
+                    if app.emit(&pump_channel, b64(&bytes)).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    emit_end(&app, &pump_channel, Some(e.message()));
+                    return;
+                }
+            }
+        }
+        emit_end(&app, &pump_channel, None);
+    });
+
+    state
+        .register_stream(format!("exec:{channel}"), handle)
+        .await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn k8s_exec_resize(
+    state: State<'_, AppState>,
+    channel: String,
+    cols: u16,
+    rows: u16,
+) -> AppResult<bool> {
+    Ok(state.resize_kube_exec(&channel, cols, rows).await)
+}
+
+#[tauri::command]
+pub async fn k8s_exec_stop(state: State<'_, AppState>, channel: String) -> AppResult<bool> {
+    state.drop_kube_resizer(&channel).await;
+    // `stop_exec` clears both the session and its output task, which is the
+    // same teardown the container terminal uses.
+    Ok(state.stop_exec(&channel).await)
+}
+
+/// Forward a local port to a port on a pod.
+///
+/// Returns the port actually bound, which is what the caller needs when it
+/// asks for 0 and lets the OS choose. Loopback only — see `k8s::exec`.
+#[tauri::command]
+pub async fn k8s_port_forward(
+    state: State<'_, AppState>,
+    namespace: String,
+    pod: String,
+    pod_port: u16,
+    local_port: u16,
+) -> AppResult<u16> {
+    let client = state.kube_client().await?;
+    let (bound, handle) =
+        k8s::exec::port_forward(client, &namespace, &pod, pod_port, local_port).await?;
+    state
+        .register_stream(format!("k8s-forward:{namespace}/{pod}/{pod_port}"), handle)
+        .await;
+    Ok(bound)
+}
+
+#[tauri::command]
+pub async fn k8s_stop_port_forward(
+    state: State<'_, AppState>,
+    namespace: String,
+    pod: String,
+    pod_port: u16,
+) -> AppResult<bool> {
+    Ok(state
+        .stop_stream(&format!("k8s-forward:{namespace}/{pod}/{pod_port}"))
+        .await)
+}
+
+/// A live resource as YAML, for editing.
+///
+/// Server-managed noise is stripped — `managedFields`, `resourceVersion`, `uid`,
+/// `creationTimestamp`, `status` — because the point is a document a person can
+/// read and change, and those fields are neither. What remains is what
+/// `kubectl edit` would show you.
+#[tauri::command]
+pub async fn k8s_resource_yaml(
+    state: State<'_, AppState>,
+    api_version: String,
+    kind: String,
+    namespace: Option<String>,
+    name: String,
+) -> AppResult<String> {
+    k8s::manifests::fetch_yaml(
+        state.kube_client().await?,
+        &api_version,
+        &kind,
+        namespace.as_deref(),
+        &name,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn k8s_list_workloads(
+    state: State<'_, AppState>,
+    namespace: Option<String>,
+) -> AppResult<Vec<k8s_model::Workload>> {
+    resources::list_workloads(state.kube_client().await?, namespace.as_deref()).await
+}

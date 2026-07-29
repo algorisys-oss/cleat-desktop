@@ -41,6 +41,12 @@ Built with Rust + Tauri v2 and React/TypeScript. No Electron, no background HTTP
 
 **Kubernetes** — reads the same kubeconfig `kubectl` does, including its auth plugins, so a cluster you can already reach works without being set up twice. Context switcher with reachability and server version, namespace filter, and tables for pods, deployments, services and nodes. Pod status is what `kubectl` shows rather than `status.phase`, so `CrashLoopBackOff` surfaces instead of a useless "Running". Streamed pod logs, inspect as JSON, delete.
 
+**Pod terminal and port-forward** — a real TTY inside a pod, same as the container one, with resize tracking; the shell is probed (bash, sh, busybox) because a distroless image has none. Port forwards bind loopback only: a forward is a hole into a cluster network, so it is not offered to the rest of your LAN.
+
+**Edit live resources** — fetch any object as YAML with the server-managed noise stripped, edit it, and apply it back through the same dry-run gate.
+
+**Every workload kind** — Deployments get their own tab with scale and rollout restart; StatefulSets, DaemonSets, Jobs and CronJobs share one, since they differ mostly in which number means what. Plus events, ConfigMaps and Secrets (key names only — values are never fetched).
+
 **Apply YAML** — paste a manifest and see exactly what it would do before it does it. The dry run is server-side: real validation, real admission webhooks, real defaulting, nothing persisted. Apply stays disabled until a dry run comes back clean. Works for CRDs the binary has never heard of, because kinds are resolved against the cluster's own API at runtime.
 
 **Deploy a container to a cluster** — generates a Deployment and Service from a running container, or from every service in a compose project. Emits a Deployment rather than the bare Pod `podman generate kube` produces: nothing restarts a Pod, nothing rolls it, and it cannot scale. The translation is lossy and says so — bind mounts to paths on this machine, host port bindings, privileged containers and environment values that look like secrets each raise a warning shown above the YAML, before anything is applied.

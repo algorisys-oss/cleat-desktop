@@ -11,6 +11,7 @@ import type {
   K8sNode,
   K8sPod,
   K8sService,
+  K8sWorkload,
   KubeContext,
   ManifestOutcome,
 } from "../types";
@@ -34,12 +35,14 @@ import {
   useToast,
 } from "../ui";
 import { formatDuration } from "../util";
+import PodTerminal from "./PodTerminal";
 
-type Tab = "pods" | "deployments" | "services" | "config" | "events" | "nodes";
+type Tab = "pods" | "deployments" | "workloads" | "services" | "config" | "events" | "nodes";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "pods", label: "Pods" },
   { id: "deployments", label: "Deployments" },
+  { id: "workloads", label: "Workloads" },
   { id: "services", label: "Services" },
   { id: "config", label: "Config" },
   { id: "events", label: "Events" },
@@ -251,6 +254,8 @@ export default function Kubernetes() {
           <PodsTable namespace={ns} search={search} context={context} />
         ) : tab === "deployments" ? (
           <DeploymentsTable namespace={ns} search={search} context={context} />
+        ) : tab === "workloads" ? (
+          <WorkloadsTable namespace={ns} search={search} context={context} />
         ) : tab === "services" ? (
           <ServicesTable namespace={ns} search={search} context={context} />
         ) : tab === "config" ? (
@@ -289,6 +294,9 @@ function PodsTable({
   const [logsFor, setLogsFor] = useState<K8sPod | null>(null);
   const [inspectFor, setInspectFor] = useState<K8sPod | null>(null);
   const [deleting, setDeleting] = useState<K8sPod | null>(null);
+  const [termFor, setTermFor] = useState<K8sPod | null>(null);
+  const [forwardFor, setForwardFor] = useState<K8sPod | null>(null);
+  const [editFor, setEditFor] = useState<K8sPod | null>(null);
 
   const rows = useMemo(() => {
     const list = pods.data ?? [];
@@ -364,6 +372,31 @@ function PodsTable({
                   <Button size="sm" variant="ghost" onClick={() => setLogsFor(p)}>
                     Logs
                   </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={p.status !== "Running"}
+                    title={
+                      p.status === "Running"
+                        ? "Open a shell in this pod"
+                        : "The pod must be running"
+                    }
+                    onClick={() => setTermFor(p)}
+                  >
+                    Terminal
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={p.status !== "Running"}
+                    onClick={() => setForwardFor(p)}
+                    title="Forward a local port to this pod"
+                  >
+                    Forward
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setEditFor(p)}>
+                    Edit
+                  </Button>
                   <Button size="sm" variant="ghost" onClick={() => setInspectFor(p)}>
                     Inspect
                   </Button>
@@ -383,6 +416,20 @@ function PodsTable({
       </Table>
 
       {logsFor && <PodLogsModal pod={logsFor} onClose={() => setLogsFor(null)} />}
+      {termFor && <PodTerminal pod={termFor} onClose={() => setTermFor(null)} />}
+      {forwardFor && (
+        <PortForwardModal pod={forwardFor} onClose={() => setForwardFor(null)} />
+      )}
+      {editFor && (
+        <EditResourceModal
+          apiVersion="v1"
+          kind="Pod"
+          namespace={editFor.namespace}
+          name={editFor.name}
+          onClose={() => setEditFor(null)}
+          onApplied={() => pods.reload()}
+        />
+      )}
       {inspectFor && <PodInspectModal pod={inspectFor} onClose={() => setInspectFor(null)} />}
 
       <ConfirmDialog
@@ -1384,5 +1431,285 @@ function ConfigTable({
         ))}
       </tbody>
     </Table>
+  );
+}
+
+// =============================================================== workloads
+
+/** StatefulSets, DaemonSets, Jobs and CronJobs in one table. */
+function WorkloadsTable({
+  namespace,
+  search,
+  context,
+}: {
+  namespace: string | null;
+  search: string;
+  context: string | null;
+}) {
+  const items = usePolled<K8sWorkload[]>(
+    () => api.k8sListWorkloads(namespace),
+    10_000,
+    [namespace, context],
+  );
+
+  const rows = useMemo(() => {
+    const list = items.data ?? [];
+    const q = search.trim().toLowerCase();
+    return q
+      ? list.filter(
+          (w) => w.name.toLowerCase().includes(q) || w.kind.toLowerCase().includes(q),
+        )
+      : list;
+  }, [items.data, search]);
+
+  if (items.error && items.initial) return <ErrorNote error={items.error} onRetry={items.reload} />;
+  if (items.initial) {
+    return (
+      <div className="flex justify-center py-16">
+        <Spinner size={22} />
+      </div>
+    );
+  }
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        title="No StatefulSets, DaemonSets, Jobs or CronJobs"
+        hint="Deployments have their own tab."
+      />
+    );
+  }
+
+  return (
+    <Table>
+      <thead>
+        <tr>
+          <Th>Kind</Th>
+          <Th>Name</Th>
+          <Th>Namespace</Th>
+          <Th>Ready</Th>
+          <Th>Detail</Th>
+          <Th>Age</Th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((w) => (
+          <tr key={`${w.kind}/${w.namespace}/${w.name}`} className="hover:bg-surface-2/50">
+            <Td>
+              <Badge tone="idle">{w.kind}</Badge>
+            </Td>
+            <Td className="font-medium break-all text-ink">{w.name}</Td>
+            <Td className="text-ink-dim">{w.namespace}</Td>
+            <Td className="font-mono text-xs text-ink-dim">{w.ready}</Td>
+            <Td className="max-w-64 truncate font-mono text-xs text-ink-faint" title={w.detail}>
+              {w.detail || "—"}
+            </Td>
+            <Td className="text-xs whitespace-nowrap text-ink-faint">{formatDuration(w.age)}</Td>
+          </tr>
+        ))}
+      </tbody>
+    </Table>
+  );
+}
+
+// ============================================================ port forward
+
+/**
+ * Forward a local port to a pod port.
+ *
+ * Loopback only — the backend binds 127.0.0.1 deliberately, since a forward is
+ * a hole into a cluster network and binding every interface would offer it to
+ * the LAN. Asking for port 0 lets the OS pick, and the bound port is reported
+ * back, which is why this shows the result rather than assuming it.
+ */
+function PortForwardModal({ pod, onClose }: { pod: K8sPod; onClose: () => void }) {
+  const [podPort, setPodPort] = useState("80");
+  const [localPort, setLocalPort] = useState("0");
+  const [active, setActive] = useState<{ local: number; remote: number } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  const start = async () => {
+    const remote = Number(podPort);
+    const local = Number(localPort);
+    if (!Number.isInteger(remote) || remote <= 0 || remote > 65535) return;
+    setBusy(true);
+    try {
+      const bound = await api.k8sPortForward(pod.namespace, pod.name, remote, local || 0);
+      setActive({ local: bound, remote });
+      toast.success(`127.0.0.1:${bound} → ${pod.name}:${remote}`);
+    } catch (e) {
+      toast.failure(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stop = async () => {
+    if (!active) return;
+    try {
+      await api.k8sStopPortForward(pod.namespace, pod.name, active.remote);
+      setActive(null);
+    } catch (e) {
+      toast.failure(e);
+    }
+  };
+
+  return (
+    <Modal
+      open
+      onClose={() => {
+        // The forward is a background task; leaving it running while the dialog
+        // that shows its address disappears would strand it.
+        void stop();
+        onClose();
+      }}
+      title={`Forward to ${pod.name}`}
+      subtitle={pod.namespace}
+      width="max-w-md"
+      footer={
+        <>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              void stop();
+              onClose();
+            }}
+          >
+            Close
+          </Button>
+          {active ? (
+            <Button variant="danger" onClick={() => void stop()}>
+              Stop forwarding
+            </Button>
+          ) : (
+            <Button variant="primary" busy={busy} onClick={() => void start()}>
+              Start
+            </Button>
+          )}
+        </>
+      }
+    >
+      <div className="space-y-3 px-5 py-4">
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <label className="mb-1 block text-xs text-ink-dim">Pod port</label>
+            <Input
+              value={podPort}
+              onChange={(e) => setPodPort(e.target.value)}
+              disabled={!!active}
+              className="w-full"
+            />
+          </div>
+          <div className="flex-1">
+            <label className="mb-1 block text-xs text-ink-dim">Local port</label>
+            <Input
+              value={localPort}
+              onChange={(e) => setLocalPort(e.target.value)}
+              disabled={!!active}
+              placeholder="0 = pick one"
+              className="w-full"
+            />
+          </div>
+        </div>
+
+        {active ? (
+          <div className="rounded border border-ok/30 bg-ok/10 px-3 py-2 text-xs text-ok">
+            Forwarding <span className="font-mono">127.0.0.1:{active.local}</span> →{" "}
+            <span className="font-mono">
+              {pod.name}:{active.remote}
+            </span>
+          </div>
+        ) : (
+          <p className="text-xs text-ink-faint">
+            Bound to loopback only. A forward opens a path into the cluster
+            network, so it is not offered to anything else on your network.
+          </p>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// ========================================================== edit a resource
+
+/**
+ * Fetch a live resource as YAML, edit it, and apply it back.
+ *
+ * Server-managed fields are stripped by the backend, so what appears is roughly
+ * what `kubectl edit` would show. Applying goes through the same dry-run gate
+ * as any other manifest — editing a live object is exactly the case where you
+ * want to know what the API server thinks before committing.
+ */
+function EditResourceModal({
+  apiVersion,
+  kind,
+  namespace,
+  name,
+  onClose,
+  onApplied,
+}: {
+  apiVersion: string;
+  kind: string;
+  namespace: string | null;
+  name: string;
+  onClose: () => void;
+  onApplied?: () => void;
+}) {
+  const [yaml, setYaml] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .k8sResourceYaml(apiVersion, kind, namespace, name)
+      .then((y) => !cancelled && setYaml(y))
+      .catch((e) => !cancelled && setError(e));
+    return () => {
+      cancelled = true;
+    };
+  }, [apiVersion, kind, namespace, name]);
+
+  if (error) {
+    return (
+      <Modal
+        open
+        onClose={onClose}
+        title={`Edit ${kind}/${name}`}
+        width="max-w-2xl"
+        footer={
+          <Button variant="subtle" onClick={onClose}>
+            Close
+          </Button>
+        }
+      >
+        <ErrorNote error={error} />
+      </Modal>
+    );
+  }
+
+  if (yaml === null) {
+    return (
+      <Modal
+        open
+        onClose={onClose}
+        title={`Edit ${kind}/${name}`}
+        width="max-w-2xl"
+        footer={null}
+      >
+        <div className="flex justify-center py-16">
+          <Spinner size={20} />
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <ApplyManifestModal
+      namespace={namespace}
+      initialYaml={yaml}
+      title={`Edit ${kind}/${name}`}
+      onClose={onClose}
+      onApplied={onApplied}
+    />
   );
 }

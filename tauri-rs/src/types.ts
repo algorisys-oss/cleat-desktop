@@ -346,3 +346,19 @@ export interface K8sConfigEntry {
   keys: string[];
   age: number;
 }
+
+/**
+ * A workload that is not a Deployment — StatefulSet, DaemonSet, Job, CronJob.
+ *
+ * One shape for four kinds because they differ in which numbers mean what: a
+ * DaemonSet has no replica count, a CronJob has a schedule instead. `ready` is
+ * pre-rendered and `detail` carries whatever else that kind is worth showing.
+ */
+export interface K8sWorkload {
+  kind: string;
+  name: string;
+  namespace: string;
+  ready: string;
+  detail: string;
+  age: number;
+}

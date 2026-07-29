@@ -24,6 +24,7 @@ import type {
   K8sNode,
   K8sPod,
   K8sService,
+  K8sWorkload,
   KubeContext,
   ManifestOutcome,
   PullProgress,
@@ -471,3 +472,77 @@ export const k8sScaleDeployment = (namespace: string, name: string, replicas: nu
   invoke<void>("k8s_scale_deployment", { namespace, name, replicas });
 export const k8sRestartDeployment = (namespace: string, name: string) =>
   invoke<void>("k8s_restart_deployment", { namespace, name });
+
+export const k8sListWorkloads = (namespace: string | null) =>
+  invoke<K8sWorkload[]>("k8s_list_workloads", { namespace });
+
+/** A live resource as editable YAML, with server-managed fields stripped. */
+export const k8sResourceYaml = (
+  apiVersion: string,
+  kind: string,
+  namespace: string | null,
+  name: string,
+) => invoke<string>("k8s_resource_yaml", { apiVersion, kind, namespace, name });
+
+/** Forward a local port to a pod port. Returns the port actually bound. */
+export const k8sPortForward = (
+  namespace: string,
+  pod: string,
+  podPort: number,
+  localPort: number,
+) => invoke<number>("k8s_port_forward", { namespace, pod, podPort, localPort });
+export const k8sStopPortForward = (namespace: string, pod: string, podPort: number) =>
+  invoke<boolean>("k8s_stop_port_forward", { namespace, pod, podPort });
+
+/**
+ * Open a shell in a pod.
+ *
+ * Bidirectional, so unlike the one-way helpers this returns the channel as well
+ * as the disposer — writes and resizes have to address the same session.
+ */
+export async function openPodTerminal(
+  namespace: string,
+  pod: string,
+  container: string | null,
+  size: { cols: number; rows: number },
+  onData: (base64: string) => void,
+  onEnd?: (error: string | null) => void,
+): Promise<{ channel: string; dispose: () => void }> {
+  const channel = nextChannel("k8s-exec");
+  const unlisteners: UnlistenFn[] = [];
+  unlisteners.push(await listen<string>(channel, (e) => onData(e.payload)));
+  unlisteners.push(
+    await listen<StreamEnd>(`${channel}:end`, (e) => onEnd?.(e.payload.error)),
+  );
+
+  try {
+    await invoke<void>("k8s_exec_start", {
+      namespace,
+      pod,
+      container,
+      argv: [],
+      cols: size.cols,
+      rows: size.rows,
+      channel,
+    });
+  } catch (err) {
+    unlisteners.forEach((u) => u());
+    throw err;
+  }
+
+  let disposed = false;
+  return {
+    channel,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      unlisteners.forEach((u) => u());
+      void invoke("k8s_exec_stop", { channel }).catch(() => {});
+    },
+  };
+}
+
+export const podTerminalWrite = (channel: string, data: string) =>
+  invoke<void>("exec_write", { session: channel, data });
+export const podTerminalResize = (channel: string, cols: number, rows: number) =>
+  invoke<boolean>("k8s_exec_resize", { channel, cols, rows });

@@ -21,6 +21,7 @@
 //! Docker's config rather than storing its own: a cluster you can already reach
 //! from the terminal should work here without being set up twice.
 
+pub mod exec;
 pub mod generate;
 pub mod manifests;
 pub mod model;

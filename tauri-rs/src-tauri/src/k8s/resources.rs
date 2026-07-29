@@ -549,3 +549,138 @@ pub async fn restart_deployment(client: Client, namespace: &str, name: &str) -> 
         .map_err(|e| AppError::Other(format!("restarting {name}: {e}")))?;
     Ok(())
 }
+
+/// StatefulSets, DaemonSets, Jobs and CronJobs in one list.
+///
+/// Fetched concurrently: four sequential round trips to the API server is a
+/// visible pause on a remote cluster, and they do not depend on each other.
+/// A kind the cluster refuses (RBAC, or an old server) contributes nothing
+/// rather than failing the whole list — a user who can see Jobs but not
+/// CronJobs should still see Jobs.
+pub async fn list_workloads(
+    client: Client,
+    namespace: Option<&str>,
+) -> AppResult<Vec<crate::k8s::model::Workload>> {
+    use crate::k8s::model::Workload;
+    use k8s_openapi::api::apps::v1::{DaemonSet, StatefulSet};
+    use k8s_openapi::api::batch::v1::{CronJob, Job};
+
+    // Bound to locals first: `join!` borrows its arguments, and an `Api` built
+    // inline is a temporary that dies before the future is polled.
+    let stateful_api = api_for::<StatefulSet>(client.clone(), namespace);
+    let daemon_api = api_for::<DaemonSet>(client.clone(), namespace);
+    let job_api = api_for::<Job>(client.clone(), namespace);
+    let cron_api = api_for::<CronJob>(client, namespace);
+    let params = ListParams::default();
+
+    let (stateful, daemon, jobs, cronjobs) = tokio::join!(
+        stateful_api.list(&params),
+        daemon_api.list(&params),
+        job_api.list(&params),
+        cron_api.list(&params),
+    );
+
+    let mut out = Vec::new();
+
+    if let Ok(list) = stateful {
+        for s in list.items {
+            let desired = s.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0);
+            let ready = s
+                .status
+                .as_ref()
+                .and_then(|s| s.ready_replicas)
+                .unwrap_or(0);
+            out.push(Workload {
+                kind: "StatefulSet".into(),
+                name: s.name_any(),
+                namespace: s.namespace().unwrap_or_default(),
+                ready: format!("{ready}/{desired}"),
+                detail: s
+                    .spec
+                    .as_ref()
+                    .map(|sp| sp.service_name.clone().unwrap_or_default())
+                    .unwrap_or_default(),
+                age: age_of(&s.metadata),
+            });
+        }
+    }
+
+    if let Ok(list) = daemon {
+        for d in list.items {
+            let status = d.status.as_ref();
+            // A DaemonSet has no replica count: its "desired" is however many
+            // nodes match, which the status reports and the spec does not.
+            let desired = status.map(|s| s.desired_number_scheduled).unwrap_or(0);
+            let ready = status.map(|s| s.number_ready).unwrap_or(0);
+            out.push(Workload {
+                kind: "DaemonSet".into(),
+                name: d.name_any(),
+                namespace: d.namespace().unwrap_or_default(),
+                ready: format!("{ready}/{desired}"),
+                detail: format!(
+                    "{} up to date",
+                    status.and_then(|s| s.updated_number_scheduled).unwrap_or(0)
+                ),
+                age: age_of(&d.metadata),
+            });
+        }
+    }
+
+    if let Ok(list) = jobs {
+        for j in list.items {
+            let status = j.status.as_ref();
+            let succeeded = status.and_then(|s| s.succeeded).unwrap_or(0);
+            let wanted = j.spec.as_ref().and_then(|s| s.completions).unwrap_or(1);
+            let failed = status.and_then(|s| s.failed).unwrap_or(0);
+            out.push(Workload {
+                kind: "Job".into(),
+                name: j.name_any(),
+                namespace: j.namespace().unwrap_or_default(),
+                ready: format!("{succeeded}/{wanted}"),
+                detail: if failed > 0 {
+                    format!("{failed} failed")
+                } else {
+                    String::new()
+                },
+                age: age_of(&j.metadata),
+            });
+        }
+    }
+
+    if let Ok(list) = cronjobs {
+        for c in list.items {
+            let spec = c.spec.as_ref();
+            let active = c
+                .status
+                .as_ref()
+                .and_then(|s| s.active.as_ref())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            out.push(Workload {
+                kind: "CronJob".into(),
+                name: c.name_any(),
+                namespace: c.namespace().unwrap_or_default(),
+                ready: format!("{active} active"),
+                detail: spec
+                    .map(|s| {
+                        let suspended = s.suspend.unwrap_or(false);
+                        if suspended {
+                            format!("{} (suspended)", s.schedule)
+                        } else {
+                            s.schedule.clone()
+                        }
+                    })
+                    .unwrap_or_default(),
+                age: age_of(&c.metadata),
+            });
+        }
+    }
+
+    out.sort_by(|a, b| {
+        a.namespace
+            .cmp(&b.namespace)
+            .then(a.kind.cmp(&b.kind))
+            .then(a.name.cmp(&b.name))
+    });
+    Ok(out)
+}

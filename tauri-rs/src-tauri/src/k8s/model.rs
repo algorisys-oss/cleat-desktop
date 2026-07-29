@@ -140,3 +140,21 @@ pub struct ConfigEntry {
     pub keys: Vec<String>,
     pub age: i64,
 }
+
+/// A workload of any kind, so one table can carry StatefulSets, DaemonSets,
+/// Jobs and CronJobs without four near-identical DTOs.
+///
+/// They differ in which numbers mean what — a DaemonSet has no replica count,
+/// a CronJob has a schedule instead — so `ready` is a rendered string and
+/// `detail` carries whatever else is worth a column for that kind.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Workload {
+    pub kind: String,
+    pub name: String,
+    pub namespace: String,
+    pub ready: String,
+    /// Schedule for a CronJob, node selector summary for a DaemonSet, and so on.
+    pub detail: String,
+    pub age: i64,
+}
