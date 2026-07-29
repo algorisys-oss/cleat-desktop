@@ -357,7 +357,12 @@ function StatusBar({
         </>
       )}
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex items-center gap-3">
+        {/* The heart uses the danger token rather than a literal red: it is the
+            only red in the palette that is contrast-checked in both themes. */}
+        <span className="hidden items-center gap-1 md:flex">
+          Developed with <span className="text-danger">♥</span> by Algorisys Technologies
+        </span>
         <ThemeToggle theme={theme} onToggle={onToggleTheme} />
         <span className="font-mono" title={`Cleat Cockpit ${__APP_VERSION__}`}>
           v{__APP_VERSION__}
