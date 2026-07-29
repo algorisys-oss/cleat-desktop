@@ -4,6 +4,7 @@ mod state;
 // Public so the integration tests in tests/ can drive a real runtime.
 pub mod error;
 pub mod model;
+pub mod k8s;
 pub mod runtime;
 
 use state::AppState;
