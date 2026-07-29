@@ -54,6 +54,11 @@ Podman needs its API socket running:
 systemctl --user start podman.socket     # rootless
 ```
 
+**Podman is Linux and macOS only.** On Windows it serves a named pipe from a
+`podman machine` VM rather than a socket, which Cleat does not speak yet — the
+runtime switcher says so rather than pretending. Windows talks to Docker Desktop
+over its named pipe; use WSL if you need Podman.
+
 ## Running
 
 ```sh

@@ -39,7 +39,7 @@ jobs:
     name: Test
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.tag || github.ref }}
 
@@ -55,7 +55,7 @@ jobs:
         with:
           workspaces: tauri-rs/src-tauri
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -108,7 +108,7 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.tag || github.ref }}
 
@@ -130,7 +130,7 @@ jobs:
           workspaces: tauri-rs/src-tauri
           key: ${{ matrix.platform }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm

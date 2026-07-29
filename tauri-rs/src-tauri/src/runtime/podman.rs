@@ -17,12 +17,16 @@ use crate::model::{
 };
 use crate::runtime::compose;
 use crate::runtime::engine::{parse_systemctl_units, validate_service_name, Engine};
+// Both are used only by the socket-discovery and connect path, which is
+// compiled out on Windows.
+#[cfg(unix)]
 use crate::runtime::wire;
 use crate::runtime::{
     ByteStream, ContainerRuntime, ExecAttach, ImportStream, LogStream, PullStream, StatsStream,
 };
 use async_trait::async_trait;
 use bollard::Docker;
+#[cfg(unix)]
 use std::path::Path;
 
 pub struct PodmanRuntime {
@@ -36,6 +40,7 @@ pub struct PodmanRuntime {
 /// falls back to `/var/run/docker.sock` when no Podman socket exists, so on a
 /// Docker-only machine Podman would report itself available and then silently
 /// serve Docker's containers under the Podman label.
+#[cfg(unix)]
 fn podman_socket_path() -> AppResult<String> {
     // Podman's own environment variable takes precedence.
     if let Ok(host) = std::env::var("CONTAINER_HOST") {
@@ -72,8 +77,25 @@ fn podman_socket_path() -> AppResult<String> {
     ))
 }
 
+/// Podman on Windows is not supported yet.
+///
+/// It runs inside a `podman machine` VM and publishes a named pipe rather than
+/// a socket file, so none of the discovery above applies and the transport is
+/// different too. Reported as a reason rather than hidden, so the runtime
+/// switcher can say why instead of silently listing one backend.
+#[cfg(windows)]
+fn podman_socket_path() -> AppResult<String> {
+    Err(AppError::RuntimeUnavailable(
+        "Podman is not supported on Windows yet — it serves a named pipe from a \
+         `podman machine` VM, which Cleat does not speak. Use Docker Desktop, or \
+         run Cleat inside WSL."
+            .into(),
+    ))
+}
+
 /// Current uid, without pulling in the libc crate for a single call.
 /// `/proc/self` is owned by the running user, so its metadata carries the uid.
+#[cfg(unix)]
 fn current_uid() -> u32 {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata("/proc/self")
@@ -82,6 +104,7 @@ fn current_uid() -> u32 {
 }
 
 /// Connect to whichever Podman socket this system actually exposes.
+#[cfg(unix)]
 fn connect_client() -> AppResult<(Docker, String)> {
     let socket = podman_socket_path()?;
     // Instrumented here rather than at the call site so no caller can obtain an
@@ -160,9 +183,24 @@ impl PodmanRuntime {
     }
 }
 
+/// Windows counterpart to [`connect_client`], which can only ever fail.
+#[cfg(windows)]
+fn connect_client() -> AppResult<(Docker, String)> {
+    let socket = podman_socket_path()?;
+    // Unreachable: the call above never returns Ok on Windows.
+    Err(AppError::RuntimeUnavailable(format!(
+        "Podman socket {socket} cannot be opened on Windows"
+    )))
+}
+
+#[cfg(unix)]
+const PODMAN_BINARY: &str = "podman";
+#[cfg(windows)]
+const PODMAN_BINARY: &str = "podman.exe";
+
 /// Is Podman present on this machine at all?
 fn installed() -> bool {
-    crate::runtime::binary_on_path("podman")
+    crate::runtime::binary_on_path(PODMAN_BINARY)
         || std::env::var_os("CONTAINER_HOST").is_some()
         || podman_socket_path().is_ok()
 }

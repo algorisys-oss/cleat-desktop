@@ -33,15 +33,9 @@ impl DockerRuntime {
             .map_err(|e| AppError::RuntimeUnavailable(format!("Docker daemon unreachable: {e}")))?;
         // Only a plain unix socket enables the lenient fallback; TCP/SSH hosts
         // keep the typed path, which is correct for a real Docker daemon anyway.
-        let socket = std::env::var("DOCKER_HOST")
-            .ok()
-            .and_then(|h| h.strip_prefix("unix://").map(str::to_string))
-            .or_else(|| {
-                let default = "/var/run/docker.sock";
-                std::path::Path::new(default)
-                    .exists()
-                    .then(|| default.to_string())
-            });
+        // Windows has no unix socket to find, so it always takes the typed path
+        // — see the note in `runtime::raw`.
+        let socket = default_socket();
 
         Ok(Self {
             engine: match socket {
@@ -52,15 +46,55 @@ impl DockerRuntime {
     }
 }
 
+/// The unix socket to use for the lenient fallback, when there is one.
+#[cfg(unix)]
+fn default_socket() -> Option<String> {
+    std::env::var("DOCKER_HOST")
+        .ok()
+        .and_then(|h| h.strip_prefix("unix://").map(str::to_string))
+        .or_else(|| {
+            let default = DEFAULT_SOCKET;
+            std::path::Path::new(default)
+                .exists()
+                .then(|| default.to_string())
+        })
+}
+
+#[cfg(windows)]
+fn default_socket() -> Option<String> {
+    None
+}
+
+#[cfg(unix)]
+const DEFAULT_SOCKET: &str = "/var/run/docker.sock";
+/// Docker Desktop's named pipe. `Path::exists` answers for a pipe on Windows,
+/// which is what makes the same "is it there?" check work on both platforms.
+#[cfg(windows)]
+const DEFAULT_SOCKET: &str = r"\\.\pipe\docker_engine";
+
 /// Is Docker present on this machine at all?
 ///
-/// The CLI, the default socket, or an explicit DOCKER_HOST each count. A remote
-/// daemon via DOCKER_HOST is "installed" even with no local binary.
+/// The CLI, the default socket or named pipe, or an explicit DOCKER_HOST each
+/// count. A remote daemon via DOCKER_HOST is "installed" even with no local
+/// binary.
 fn installed() -> bool {
-    crate::runtime::binary_on_path("docker")
-        || std::path::Path::new("/var/run/docker.sock").exists()
+    crate::runtime::binary_on_path(DOCKER_BINARY)
+        || std::path::Path::new(DEFAULT_SOCKET).exists()
         || std::env::var_os("DOCKER_HOST").is_some()
 }
+
+#[cfg(unix)]
+const DOCKER_BINARY: &str = "docker";
+/// `binary_on_path` looks for a file by exact name, and PATH entries on Windows
+/// hold `docker.exe`.
+#[cfg(windows)]
+const DOCKER_BINARY: &str = "docker.exe";
+
+/// What to tell someone whose daemon is installed but not answering.
+#[cfg(unix)]
+const START_HINT: &str = "Try `sudo systemctl start docker`";
+#[cfg(windows)]
+const START_HINT: &str = "Start Docker Desktop and wait for it to report Running";
 
 /// Probe Docker for the runtime switcher without committing to a connection.
 pub async fn probe() -> RuntimeInfo {
@@ -84,9 +118,7 @@ pub async fn probe() -> RuntimeInfo {
                 api_version: v.api_version,
                 detail: None,
             },
-            Err(e) if installed => unavailable(format!(
-                "daemon unreachable: {e}. Try `sudo systemctl start docker`"
-            )),
+            Err(e) if installed => unavailable(format!("daemon unreachable: {e}. {START_HINT}")),
             Err(e) => unavailable(format!("daemon unreachable: {e}")),
         },
         Err(e) => unavailable(e.to_string()),

@@ -107,3 +107,15 @@ window.
 Nothing is code-signed — macOS Gatekeeper and Windows SmartScreen will both
 object to released builds. Only Linux has been exercised at runtime; the macOS
 and Windows CI builds compile but nobody has run them.
+
+**Windows compiled for the first time in v0.2.1.** Every release before that
+advertised `.msi`/`.exe` artifacts that were never produced — the job failed in
+`hyperlocal`, which is unix-sockets-only and sat in plain `[dependencies]`.
+Transport crates now hang off `[target.'cfg(unix)']` / `[target.'cfg(windows)']`
+and bollard carries its `pipe` feature there. Podman is compiled out on Windows
+and reports why. Verify a Windows change with:
+
+```sh
+rustup target add x86_64-pc-windows-msvc
+cargo check --target x86_64-pc-windows-msvc     # needs llvm-rc to get past tauri-winres
+```

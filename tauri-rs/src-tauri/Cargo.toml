@@ -32,8 +32,18 @@ tauri-plugin-dialog = "2.7.2"
 async-trait = "0.1.91"
 bytes = "1.12.1"
 base64 = "0.22.1"
-hyperlocal = "0.9.1"
 hyper = "1.11.0"
 http-body-util = "0.1.4"
 hyper-util = { version = "0.1.20", features = ["client", "client-legacy", "http1"] }
+
+# The Engine API arrives over a different transport per platform, and each
+# transport crate only compiles for its own: hyperlocal is unix-domain sockets
+# and does not build on Windows at all, which is why it cannot sit in
+# [dependencies]. bollard's `pipe` feature pulls the named-pipe connector that
+# `connect_with_defaults` needs to find Docker Desktop.
+[target.'cfg(unix)'.dependencies]
+hyperlocal = "0.9.1"
+
+[target.'cfg(windows)'.dependencies]
+bollard = { version = "0.21.0", features = ["pipe"] }
 

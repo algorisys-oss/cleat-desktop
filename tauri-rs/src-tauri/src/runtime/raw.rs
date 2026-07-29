@@ -12,15 +12,26 @@
 //! This module fetches the same endpoint into `serde_json::Value`, where an
 //! unrecognised state is just a string. It is a fallback: the typed bollard path
 //! is tried first and is what normally runs.
+//!
+//! Unix only, by construction. The transport is a unix-domain socket, and the
+//! problem it solves is a Podman one — Docker never reports a state outside its
+//! own vocabulary, and Docker is the only runtime reachable on Windows. See the
+//! Windows [`get_json`] below.
 
 use crate::error::{AppError, AppResult};
+#[cfg(unix)]
 use crate::runtime::wire;
+#[cfg(unix)]
 use http_body_util::{BodyExt, Full};
+#[cfg(unix)]
 use hyper::body::Bytes;
+#[cfg(unix)]
 use hyper_util::client::legacy::Client;
+#[cfg(unix)]
 use hyperlocal::{UnixClientExt, UnixConnector, Uri};
 
 /// GET `path` from the daemon behind `socket`, parsed as untyped JSON.
+#[cfg(unix)]
 pub async fn get_json(socket: &str, path: &str) -> AppResult<serde_json::Value> {
     let client: Client<UnixConnector, Full<Bytes>> = Client::unix();
 
@@ -53,6 +64,20 @@ pub async fn get_json(socket: &str, path: &str) -> AppResult<serde_json::Value> 
     }
 
     serde_json::from_slice(&body).map_err(|e| AppError::Other(format!("parsing {path}: {e}")))
+}
+
+/// Unreachable on Windows, and deliberately so.
+///
+/// [`Engine::socket`](crate::runtime::engine::Engine) is the gate on every call
+/// into here, and nothing sets it on Windows — there is no unix socket to set it
+/// to. Kept as a signature rather than deleted so `engine.rs` stays one
+/// codebase across platforms instead of growing `cfg` arms through its hot path.
+#[cfg(windows)]
+pub async fn get_json(socket: &str, path: &str) -> AppResult<serde_json::Value> {
+    Err(AppError::Other(format!(
+        "the lenient unix-socket fallback is not available on Windows \
+         (requested {path} from {socket})"
+    )))
 }
 
 /// Normalise a runtime-reported container state onto Docker's vocabulary.
