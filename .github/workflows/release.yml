@@ -88,21 +88,30 @@ jobs:
           - platform: ubuntu-22.04
             label: Linux (deb/rpm/AppImage)
             args: ""
+            rust_target: ""
             binary: tauri-rs/src-tauri/target/release/cleat
             asset: cleat-linux-x86_64
           - platform: macos-latest
             label: macOS (Apple silicon)
             args: "--target aarch64-apple-darwin"
+            rust_target: aarch64-apple-darwin
             binary: tauri-rs/src-tauri/target/aarch64-apple-darwin/release/cleat
             asset: cleat-macos-aarch64
-          - platform: macos-13
+          # Cross-compiled from the Apple-silicon runner rather than built on an
+          # Intel one. `macos-13` jobs sat queued indefinitely — no runner was
+          # ever assigned — which left every run since v0.1.2 permanently
+          # in-progress. Same OS family and one Xcode ships both SDKs, so this
+          # is an ordinary cross-build, not the Linux-can't-make-a-dmg problem.
+          - platform: macos-latest
             label: macOS (Intel)
             args: "--target x86_64-apple-darwin"
+            rust_target: x86_64-apple-darwin
             binary: tauri-rs/src-tauri/target/x86_64-apple-darwin/release/cleat
             asset: cleat-macos-x86_64
           - platform: windows-latest
             label: Windows (msi/exe)
             args: ""
+            rust_target: ""
             binary: tauri-rs/src-tauri/target/release/cleat.exe
             asset: cleat-windows-x86_64.exe
 
@@ -123,12 +132,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || matrix.platform == 'macos-13' && 'x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.rust_target }}
 
+      # Keyed on the asset, not the platform: both macOS jobs now run on the
+      # same runner image and would otherwise share one cache between two
+      # different target triples.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tauri-rs/src-tauri
-          key: ${{ matrix.platform }}
+          key: ${{ matrix.asset }}
 
       - uses: actions/setup-node@v5
         with:
