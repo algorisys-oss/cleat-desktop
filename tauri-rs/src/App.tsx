@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as api from "./api";
-import { usePersisted } from "./hooks";
+import { usePersisted, useTheme } from "./hooks";
 import type { RuntimeInfo, RuntimeKind } from "./types";
-import { Badge, Button, Dot, Spinner, ToastProvider, useToast } from "./ui";
+import { Badge, Button, Dot, Spinner, ThemeToggle, ToastProvider, useToast } from "./ui";
 import Containers from "./views/Containers";
 import Dashboard from "./views/Dashboard";
 import Images from "./views/Images";
@@ -45,6 +45,7 @@ function Shell() {
   const [view, setView] = useState<ViewId>("dashboard");
   // Collapsed by default; persisted, so anyone who expands it keeps that.
   const [collapsed, setCollapsed] = usePersisted("cleat.sidebar.collapsed", true);
+  const [theme, setTheme] = useTheme();
   const [runtimes, setRuntimes] = useState<RuntimeInfo[]>([]);
   const [active, setActive] = useState<RuntimeKind | null>(null);
   const [booting, setBooting] = useState(true);
@@ -204,7 +205,11 @@ function Shell() {
           onRefresh={refreshRuntimes}
         />
 
-        <StatusBar collapsed={collapsed} />
+        <StatusBar
+          collapsed={collapsed}
+          theme={theme}
+          onToggleTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
+        />
       </aside>
 
       <main className="min-w-0 flex-1 overflow-hidden bg-surface-0">
@@ -242,16 +247,25 @@ function Shell() {
  * build-time define, so it always matches the bundle that was actually
  * produced — see `vite.config.ts`. `/shipit` bumps that file.
  */
-function StatusBar({ collapsed }: { collapsed: boolean }) {
+function StatusBar({
+  collapsed,
+  theme,
+  onToggleTheme,
+}: {
+  collapsed: boolean;
+  theme: "dark" | "light";
+  onToggleTheme: () => void;
+}) {
   return (
     <div
-      className={`flex items-center border-t border-edge py-1.5 ${
-        collapsed ? "justify-center px-1" : "justify-between px-3"
+      className={`flex items-center border-t border-edge py-1 ${
+        collapsed ? "flex-col gap-0.5 px-1" : "justify-between px-2"
       }`}
     >
-      {/* The name is the droppable half: it is on the window title and the
-          header already. The version is the point of this strip. */}
-      {!collapsed && <span className="text-[10px] text-ink-faint">Cleat</span>}
+      {/* The name is the droppable half when space is short: it is on the
+          window title and the sidebar header already. The version and the
+          theme control both earn their place. */}
+      <ThemeToggle theme={theme} onToggle={onToggleTheme} />
       <span className="font-mono text-[10px] text-ink-faint" title={`Cleat ${__APP_VERSION__}`}>
         v{__APP_VERSION__}
       </span>

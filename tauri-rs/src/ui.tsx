@@ -79,6 +79,70 @@ export function Button({
   );
 }
 
+/**
+ * Light/dark toggle.
+ *
+ * A bulb rather than a sun/moon because the action is "turn the lights on",
+ * which is what the control does — it lights the *app*, not the sky. Filled
+ * with rays when light is active, outline when dark, so the state is legible
+ * without colour alone carrying it.
+ *
+ * `currentColor` throughout, so it inherits whatever contrast-checked ink token
+ * the surrounding text uses instead of introducing a colour of its own.
+ */
+export function ThemeToggle({
+  theme,
+  onToggle,
+  className = "",
+}: {
+  theme: "dark" | "light";
+  onToggle: () => void;
+  className?: string;
+}) {
+  const light = theme === "light";
+  const label = light ? "Switch to dark theme" : "Switch to light theme";
+
+  return (
+    <button
+      onClick={onToggle}
+      title={label}
+      aria-label={label}
+      aria-pressed={light}
+      className={`rounded p-1 text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink ${className}`}
+    >
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        {/* Glass */}
+        <path
+          d="M9 17.5a5.5 5.5 0 0 1-2-4.2 5 5 0 1 1 10 0 5.5 5.5 0 0 1-2 4.2v1.3a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1z"
+          fill={light ? "currentColor" : "none"}
+          opacity={light ? 0.22 : 1}
+        />
+        {/* Base */}
+        <path d="M10 21h4" />
+        {light && (
+          <g opacity="0.9">
+            <path d="M12 1.5v1.6" />
+            <path d="M4.4 5.4 5.6 6.5" />
+            <path d="M19.6 5.4 18.4 6.5" />
+            <path d="M2 13.2h1.5" />
+            <path d="M20.5 13.2H22" />
+          </g>
+        )}
+      </svg>
+    </button>
+  );
+}
+
 export function Spinner({ size = 14 }: { size?: number }) {
   return (
     <svg
