@@ -222,3 +222,97 @@ export interface ActivityEntry {
   durationMs: number;
   error: string | null;
 }
+
+// ================================================================ kubernetes
+//
+// Mirrors src-tauri/src/k8s/. Kept in this file rather than a second one
+// because the frontend has always had exactly one types module, but note the
+// Rust side does split: a cluster and a container runtime share no vocabulary.
+
+export interface KubeContext {
+  name: string;
+  cluster: string;
+  user: string;
+  namespace: string | null;
+  current: boolean;
+}
+
+/** Whether a context's cluster actually answered. Mirrors RuntimeInfo. */
+export interface ClusterInfo {
+  context: string;
+  available: boolean;
+  version: string | null;
+  detail: string | null;
+}
+
+export interface K8sNamespace {
+  name: string;
+  phase: string;
+  /** Seconds since creation. */
+  age: number;
+}
+
+export interface K8sPod {
+  name: string;
+  namespace: string;
+  /** What `kubectl get pods` shows: a container reason when one is more
+   *  informative than the phase, so CrashLoopBackOff surfaces rather than
+   *  "Running". */
+  status: string;
+  ready: string;
+  restarts: number;
+  age: number;
+  node: string | null;
+  ip: string | null;
+  containers: string[];
+}
+
+export interface K8sDeployment {
+  name: string;
+  namespace: string;
+  ready: string;
+  upToDate: number;
+  available: number;
+  age: number;
+  images: string[];
+}
+
+export interface K8sService {
+  name: string;
+  namespace: string;
+  type_: string;
+  clusterIp: string | null;
+  externalIp: string | null;
+  ports: string[];
+  age: number;
+}
+
+export interface K8sNode {
+  name: string;
+  status: string;
+  roles: string[];
+  version: string;
+  age: number;
+  internalIp: string | null;
+}
+
+/** What one document in a manifest would do, or did. */
+export interface ManifestOutcome {
+  kind: string;
+  name: string;
+  namespace: string | null;
+  /** created | configured | unchanged | deleted | failed */
+  action: string;
+  error: string | null;
+}
+
+/** Something the container-to-manifest translation could not carry across. */
+export interface GenerateWarning {
+  kind: string;
+  message: string;
+}
+
+export interface GeneratedManifest {
+  yaml: string;
+  warnings: GenerateWarning[];
+}

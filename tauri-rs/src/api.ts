@@ -15,6 +15,15 @@ import type {
   ImageTransferProgress,
   LogLine,
   Network,
+  ClusterInfo,
+  GeneratedManifest,
+  K8sDeployment,
+  K8sNamespace,
+  K8sNode,
+  K8sPod,
+  K8sService,
+  KubeContext,
+  ManifestOutcome,
   PullProgress,
   RegistryLogin,
   RuntimeInfo,
@@ -361,3 +370,93 @@ export const onRuntimeReady = (cb: (kind: RuntimeKind | null) => void) =>
 /** Everything Cleat has asked a runtime to do this session, newest first. */
 export const activityLog = () => invoke<ActivityEntry[]>("activity_log");
 export const clearActivityLog = () => invoke<void>("clear_activity_log");
+
+// -------------------------------------------------------------- kubernetes
+
+export const k8sContexts = () => invoke<KubeContext[]>("k8s_contexts");
+export const k8sProbeClusters = () => invoke<ClusterInfo[]>("k8s_probe_clusters");
+export const k8sCurrentContext = () => invoke<string | null>("k8s_current_context");
+export const k8sSelectContext = (context: string | null) =>
+  invoke<void>("k8s_select_context", { context });
+
+/** `namespace: null` means every namespace, matching `kubectl -A`. */
+export const k8sListNamespaces = () => invoke<K8sNamespace[]>("k8s_list_namespaces");
+export const k8sListPods = (namespace: string | null) =>
+  invoke<K8sPod[]>("k8s_list_pods", { namespace });
+export const k8sListDeployments = (namespace: string | null) =>
+  invoke<K8sDeployment[]>("k8s_list_deployments", { namespace });
+export const k8sListServices = (namespace: string | null) =>
+  invoke<K8sService[]>("k8s_list_services", { namespace });
+export const k8sListNodes = () => invoke<K8sNode[]>("k8s_list_nodes");
+
+export const k8sInspectPod = (namespace: string, name: string) =>
+  invoke<unknown>("k8s_inspect_pod", { namespace, name });
+export const k8sDeletePod = (namespace: string, name: string) =>
+  invoke<void>("k8s_delete_pod", { namespace, name });
+export const k8sPodLogs = (
+  namespace: string,
+  name: string,
+  container: string | null,
+  tail = 500,
+) => invoke<string>("k8s_pod_logs", { namespace, name, container, tail });
+
+/**
+ * Follow a pod's logs. One line per event — unlike container logs there is no
+ * stdout/stderr split, because the API server merges them and does not say
+ * which was which.
+ */
+export function subscribePodLogs(
+  namespace: string,
+  name: string,
+  container: string | null,
+  onLine: (line: string) => void,
+  options: { tail?: number; onEnd?: (error: string | null) => void } = {},
+) {
+  return openStream<string>(
+    "k8s-logs",
+    (channel) =>
+      invoke<void>("k8s_follow_pod_logs", {
+        namespace,
+        name,
+        container,
+        tail: options.tail ?? 500,
+        channel,
+      }),
+    () => invoke<boolean>("k8s_stop_pod_logs", { namespace, name }),
+    onLine,
+    options.onEnd,
+  );
+}
+
+/** `dryRun` runs the full admission chain server-side and persists nothing. */
+export const k8sApplyManifest = (yaml: string, namespace: string | null, dryRun: boolean) =>
+  invoke<ManifestOutcome[]>("k8s_apply_manifest", { yaml, namespace, dryRun });
+export const k8sDeleteManifest = (yaml: string, namespace: string | null) =>
+  invoke<ManifestOutcome[]>("k8s_delete_manifest", { yaml, namespace });
+export const k8sEnsureNamespace = (name: string) =>
+  invoke<void>("k8s_ensure_namespace", { name });
+
+export const k8sGenerateFromContainer = (
+  id: string,
+  namespace: string | null,
+  replicas: number,
+  includeService: boolean,
+) =>
+  invoke<GeneratedManifest>("k8s_generate_from_container", {
+    id,
+    namespace,
+    replicas,
+    includeService,
+  });
+export const k8sGenerateFromCompose = (
+  project: string,
+  namespace: string | null,
+  replicas: number,
+  includeService: boolean,
+) =>
+  invoke<GeneratedManifest>("k8s_generate_from_compose", {
+    project,
+    namespace,
+    replicas,
+    includeService,
+  });

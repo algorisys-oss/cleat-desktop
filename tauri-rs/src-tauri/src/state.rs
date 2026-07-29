@@ -61,6 +61,14 @@ pub struct AppState {
     /// Every operation performed, for the activity panel. Outlives runtime
     /// switches on purpose — "what did I just do" spans them.
     activity: Arc<ActivityLog>,
+    /// Selected kubeconfig context, when the user has chosen one.
+    ///
+    /// A name rather than a client: clients are built per call because their
+    /// credentials may come from an exec plugin with a short expiry, so a
+    /// cached one works until the token quietly dies. See [`crate::k8s::client`].
+    /// `None` means "whatever the kubeconfig says is current", which is what
+    /// `kubectl` would do.
+    kube_context: RwLock<Option<String>>,
 }
 
 impl AppState {
@@ -79,6 +87,24 @@ impl AppState {
 
     pub async fn current_kind(&self) -> Option<RuntimeKind> {
         self.runtime.read().await.as_ref().map(|r| r.kind())
+    }
+
+    /// The chosen kubeconfig context, if any.
+    pub async fn kube_context(&self) -> Option<String> {
+        self.kube_context.read().await.clone()
+    }
+
+    /// Choose a context. Not validated here — [`crate::k8s::probe`] is how the
+    /// UI finds out whether a cluster answers, and selecting an unreachable one
+    /// has to stay possible so its error can be shown in place.
+    pub async fn select_kube_context(&self, context: Option<String>) {
+        *self.kube_context.write().await = context;
+    }
+
+    /// A client for the selected context.
+    pub async fn kube_client(&self) -> AppResult<kube::Client> {
+        let context = self.kube_context().await;
+        crate::k8s::client(context.as_deref()).await
     }
 
     /// Switch runtimes. The new one is connected and pinged *before* the old

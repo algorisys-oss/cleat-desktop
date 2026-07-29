@@ -10,6 +10,7 @@ import Networks from "./views/Networks";
 import Volumes from "./views/Volumes";
 import Activity from "./views/Activity";
 import Compose from "./views/Compose";
+import Kubernetes from "./views/Kubernetes";
 
 type ViewId =
   | "dashboard"
@@ -18,6 +19,7 @@ type ViewId =
   | "networks"
   | "volumes"
   | "compose"
+  | "kubernetes"
   | "activity";
 
 const NAV: { id: ViewId; label: string; icon: string }[] = [
@@ -27,6 +29,7 @@ const NAV: { id: ViewId; label: string; icon: string }[] = [
   { id: "networks", label: "Networks", icon: "⁂" },
   { id: "volumes", label: "Volumes", icon: "▤" },
   { id: "compose", label: "Compose", icon: "⧉" },
+  { id: "kubernetes", label: "Kubernetes", icon: "☸" },
   { id: "activity", label: "Activity", icon: "◷" },
 ];
 
@@ -225,6 +228,7 @@ function Shell() {
             {view === "networks" && <Networks />}
             {view === "volumes" && <Volumes />}
             {view === "compose" && <Compose />}
+            {view === "kubernetes" && <Kubernetes />}
             {view === "activity" && <Activity />}
           </div>
         )}

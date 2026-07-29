@@ -10,7 +10,7 @@ use k8s_openapi::api::apps::v1::Deployment as K8sDeployment;
 use k8s_openapi::api::core::v1::{
     Namespace as K8sNamespace, Node as K8sNode, Pod as K8sPod, Service as K8sService,
 };
-use kube::api::{Api, DeleteParams, ListParams};
+use kube::api::{Api, DeleteParams, ListParams, LogParams};
 use kube::{Client, ResourceExt};
 
 /// Seconds since `creation_timestamp`.
@@ -339,4 +339,63 @@ pub async fn delete_pod(client: Client, namespace: &str, name: &str) -> AppResul
         .await
         .map_err(|e| AppError::Other(format!("deleting pod {name}: {e}")))?;
     Ok(())
+}
+
+/// One-shot log fetch, `tail` lines.
+pub async fn pod_logs(
+    client: Client,
+    namespace: &str,
+    name: &str,
+    container: Option<&str>,
+    tail: i64,
+) -> AppResult<String> {
+    let api: Api<K8sPod> = Api::namespaced(client, namespace);
+    let params = LogParams {
+        container: container.map(str::to_string),
+        tail_lines: Some(tail),
+        ..Default::default()
+    };
+    api.logs(name, &params)
+        .await
+        .map_err(|e| AppError::Other(format!("logs for {name}: {e}")))
+}
+
+/// A followed pod log, one line per item.
+///
+/// Same shape as [`LogStream`](crate::runtime::LogStream) so the command layer
+/// pumps it identically — note it is `futures`' `AsyncBufRead` that `log_stream`
+/// returns, not tokio's, and `futures`' `lines()` already yields a `Stream`.
+pub type PodLogStream =
+    std::pin::Pin<Box<dyn futures_util::Stream<Item = AppResult<String>> + Send>>;
+
+/// Follow a pod's logs.
+///
+/// Unlike the container path there is no stdout/stderr split: the API server
+/// merges them and does not say which was which, so the UI must not offer a
+/// filter it cannot honour.
+pub async fn follow_pod_logs(
+    client: Client,
+    namespace: &str,
+    name: &str,
+    container: Option<&str>,
+    tail: i64,
+) -> AppResult<PodLogStream> {
+    use futures_util::{AsyncBufReadExt, StreamExt};
+
+    let api: Api<K8sPod> = Api::namespaced(client, namespace);
+    let params = LogParams {
+        container: container.map(str::to_string),
+        tail_lines: Some(tail),
+        follow: true,
+        ..Default::default()
+    };
+
+    let reader = api
+        .log_stream(name, &params)
+        .await
+        .map_err(|e| AppError::Other(format!("following logs for {name}: {e}")))?;
+
+    Ok(Box::pin(reader.lines().map(|line| {
+        line.map_err(|e| AppError::Other(format!("reading log stream: {e}")))
+    })))
 }

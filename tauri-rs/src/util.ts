@@ -79,6 +79,30 @@ export function formatAge(unixSeconds: number): string {
   return `${rounded} ${AGE_UNITS[idx]}${rounded === 1 ? "" : "s"} ago`;
 }
 
+/**
+ * An elapsed duration in seconds, as `kubectl` writes ages: `5d3h`, `12m`.
+ *
+ * Distinct from {@link formatAge}, which takes a unix timestamp. Kubernetes
+ * reports creation times the app converts to an elapsed count before it
+ * arrives, so passing one to the other silently produces "56 years ago".
+ */
+export function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
+
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `${m}m`;
+
+  const h = Math.floor(m / 60);
+  if (h < 24) return m % 60 ? `${h}h${m % 60}m` : `${h}h`;
+
+  const d = Math.floor(h / 24);
+  if (d < 365) return h % 24 ? `${d}d${h % 24}h` : `${d}d`;
+
+  const y = Math.floor(d / 365);
+  return d % 365 ? `${y}y${d % 365}d` : `${y}y`;
+}
+
 export function shortId(id: string, len = 12): string {
   return id.replace(/^sha256:/, "").slice(0, len);
 }
