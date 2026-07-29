@@ -3,6 +3,8 @@ import * as api from "../api";
 import { useBusyMap, useDebounced, usePersisted, usePolled } from "../hooks";
 import type {
   ClusterInfo,
+  K8sConfigEntry,
+  K8sEvent,
   GeneratedManifest,
   K8sDeployment,
   K8sNamespace,
@@ -33,12 +35,14 @@ import {
 } from "../ui";
 import { formatDuration } from "../util";
 
-type Tab = "pods" | "deployments" | "services" | "nodes";
+type Tab = "pods" | "deployments" | "services" | "config" | "events" | "nodes";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "pods", label: "Pods" },
   { id: "deployments", label: "Deployments" },
   { id: "services", label: "Services" },
+  { id: "config", label: "Config" },
+  { id: "events", label: "Events" },
   { id: "nodes", label: "Nodes" },
 ];
 
@@ -249,6 +253,10 @@ export default function Kubernetes() {
           <DeploymentsTable namespace={ns} search={search} context={context} />
         ) : tab === "services" ? (
           <ServicesTable namespace={ns} search={search} context={context} />
+        ) : tab === "config" ? (
+          <ConfigTable namespace={ns} search={search} context={context} />
+        ) : tab === "events" ? (
+          <EventsTable namespace={ns} search={search} context={context} />
         ) : (
           <NodesTable search={search} context={context} />
         )}
@@ -626,12 +634,26 @@ function DeploymentsTable({
     8000,
     [namespace, context],
   );
+  const { busy, run } = useBusyMap();
+  const toast = useToast();
+  const [scaling, setScaling] = useState<K8sDeployment | null>(null);
 
   const rows = useMemo(() => {
     const list = items.data ?? [];
     const q = search.trim().toLowerCase();
     return q ? list.filter((d) => d.name.toLowerCase().includes(q)) : list;
   }, [items.data, search]);
+
+  const restart = (d: K8sDeployment) =>
+    run(`${d.namespace}/${d.name}:restart`, async () => {
+      try {
+        await api.k8sRestartDeployment(d.namespace, d.name);
+        toast.success(`${d.name} rolling`);
+        items.reload();
+      } catch (e) {
+        toast.failure(e);
+      }
+    });
 
   if (items.error && items.initial) return <ErrorNote error={items.error} onRetry={items.reload} />;
   if (items.initial) {
@@ -644,6 +666,7 @@ function DeploymentsTable({
   if (rows.length === 0) return <EmptyState title="No deployments" />;
 
   return (
+    <>
     <Table>
       <thead>
         <tr>
@@ -654,6 +677,7 @@ function DeploymentsTable({
           <Th>Available</Th>
           <Th>Images</Th>
           <Th>Age</Th>
+          <Th className="text-right">Actions</Th>
         </tr>
       </thead>
       <tbody>
@@ -675,11 +699,111 @@ function DeploymentsTable({
               <Td className="text-xs whitespace-nowrap text-ink-faint">
                 {formatDuration(d.age)}
               </Td>
+              <Td>
+                <div className="flex justify-end gap-1">
+                  <Button size="sm" variant="ghost" onClick={() => setScaling(d)}>
+                    Scale
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    busy={busy[`${d.namespace}/${d.name}:restart`]}
+                    onClick={() => restart(d)}
+                    title="Roll the pods, as `kubectl rollout restart` does"
+                  >
+                    Restart
+                  </Button>
+                </div>
+              </Td>
             </tr>
           );
         })}
       </tbody>
     </Table>
+    {scaling && (
+      <ScaleDialog
+        deployment={scaling}
+        onClose={() => setScaling(null)}
+        onScaled={() => {
+          setScaling(null);
+          items.reload();
+        }}
+      />
+    )}
+    </>
+  );
+}
+
+/** Set a replica count, including zero. */
+function ScaleDialog({
+  deployment,
+  onClose,
+  onScaled,
+}: {
+  deployment: K8sDeployment;
+  onClose: () => void;
+  onScaled: () => void;
+}) {
+  const current = Number(deployment.ready.split("/")[1] ?? 0);
+  const [replicas, setReplicas] = useState(String(current));
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  const value = Number(replicas);
+  const valid = Number.isInteger(value) && value >= 0;
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={`Scale ${deployment.name}`}
+      subtitle={deployment.namespace}
+      width="max-w-md"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            busy={busy}
+            disabled={!valid || busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await api.k8sScaleDeployment(deployment.namespace, deployment.name, value);
+                toast.success(`${deployment.name} scaled to ${value}`);
+                onScaled();
+              } catch (e) {
+                toast.failure(e);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Scale
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-2 px-5 py-4">
+        <label className="mb-1 block text-xs text-ink-dim">Replicas</label>
+        <Input
+          autoFocus
+          type="number"
+          min={0}
+          value={replicas}
+          onChange={(e) => setReplicas(e.target.value)}
+          className="w-full"
+        />
+        <p className="text-xs text-ink-faint">
+          {/* Scaling to zero is a normal thing to want and easy to do by
+              accident, so it is named rather than silently accepted. */}
+          {value === 0
+            ? "Zero replicas stops every pod but keeps the deployment, so it can be scaled back up."
+            : `Currently ${current}.`}
+        </p>
+      </div>
+    </Modal>
   );
 }
 
@@ -1068,5 +1192,197 @@ export function DeployToClusterModal({
         )}
       </div>
     </Modal>
+  );
+}
+
+// ================================================================== events
+
+/**
+ * Recent cluster events.
+ *
+ * The first place to look when something will not start, and the reason
+ * diagnosing a Pending pod usually means dropping to `kubectl describe`. Sorted
+ * newest-first by *last seen*, not creation: a warning that fired an hour ago
+ * and again ten seconds ago is current, and ordering by creation buries it.
+ */
+function EventsTable({
+  namespace,
+  search,
+  context,
+}: {
+  namespace: string | null;
+  search: string;
+  context: string | null;
+}) {
+  const items = usePolled<K8sEvent[]>(
+    () => api.k8sListEvents(namespace),
+    10_000,
+    [namespace, context],
+  );
+  const [warningsOnly, setWarningsOnly] = usePersisted("cleat.k8s.warningsOnly", false);
+
+  const rows = useMemo(() => {
+    const list = items.data ?? [];
+    const q = search.trim().toLowerCase();
+    return list.filter((e) => {
+      if (warningsOnly && e.type_ !== "Warning") return false;
+      if (!q) return true;
+      return (
+        e.object.toLowerCase().includes(q) ||
+        e.reason.toLowerCase().includes(q) ||
+        e.message.toLowerCase().includes(q)
+      );
+    });
+  }, [items.data, search, warningsOnly]);
+
+  if (items.error && items.initial) return <ErrorNote error={items.error} onRetry={items.reload} />;
+  if (items.initial) {
+    return (
+      <div className="flex justify-center py-16">
+        <Spinner size={22} />
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="flex items-center gap-2 border-b border-edge px-3 py-1.5">
+        <label className="flex items-center gap-1.5 text-xs text-ink-dim">
+          <input
+            type="checkbox"
+            checked={warningsOnly}
+            onChange={(e) => setWarningsOnly(e.target.checked)}
+            className="accent-accent"
+          />
+          Warnings only
+        </label>
+        <span className="ml-auto text-xs text-ink-faint">{rows.length} events</span>
+      </div>
+
+      {rows.length === 0 ? (
+        <EmptyState
+          title={warningsOnly ? "No warnings" : "No events"}
+          hint="Clusters expire events after about an hour, so an empty list can just mean nothing has happened recently."
+        />
+      ) : (
+        <Table>
+          <thead>
+            <tr>
+              <Th className="w-8" />
+              <Th>Object</Th>
+              <Th>Reason</Th>
+              <Th>Message</Th>
+              <Th>Count</Th>
+              <Th>Last seen</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((e, i) => (
+              <tr key={`${e.object}-${e.reason}-${i}`} className="hover:bg-surface-2/50">
+                <Td>
+                  <Dot tone={e.type_ === "Warning" ? "danger" : "idle"} />
+                </Td>
+                <Td className="font-medium break-all text-ink">{e.object}</Td>
+                <Td>
+                  <Badge tone={e.type_ === "Warning" ? "danger" : "idle"}>{e.reason}</Badge>
+                </Td>
+                <Td className="max-w-xl break-words text-xs text-ink-dim">{e.message}</Td>
+                <Td className="text-ink-dim">
+                  {/* A count above one means it is recurring, which is a
+                      different problem from a one-off. */}
+                  {e.count > 1 ? <span className="text-warn">×{e.count}</span> : "1"}
+                </Td>
+                <Td className="text-xs whitespace-nowrap text-ink-faint">
+                  {formatDuration(e.age)}
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      )}
+    </>
+  );
+}
+
+// ================================================================== config
+
+/**
+ * ConfigMaps and Secrets in one table.
+ *
+ * Key names only — Secret *values* are never fetched. Putting cluster
+ * credentials into this process would give it something it has no reason to
+ * hold, and would be one screenshot away from a bug report. Which keys exist is
+ * what you actually need to know when a pod is failing to mount one.
+ */
+function ConfigTable({
+  namespace,
+  search,
+  context,
+}: {
+  namespace: string | null;
+  search: string;
+  context: string | null;
+}) {
+  const items = usePolled<K8sConfigEntry[]>(
+    () => api.k8sListConfig(namespace),
+    15_000,
+    [namespace, context],
+  );
+
+  const rows = useMemo(() => {
+    const list = items.data ?? [];
+    const q = search.trim().toLowerCase();
+    return q
+      ? list.filter(
+          (c) =>
+            c.name.toLowerCase().includes(q) ||
+            c.keys.some((k) => k.toLowerCase().includes(q)),
+        )
+      : list;
+  }, [items.data, search]);
+
+  if (items.error && items.initial) return <ErrorNote error={items.error} onRetry={items.reload} />;
+  if (items.initial) {
+    return (
+      <div className="flex justify-center py-16">
+        <Spinner size={22} />
+      </div>
+    );
+  }
+  if (rows.length === 0) return <EmptyState title="No ConfigMaps or Secrets" />;
+
+  return (
+    <Table>
+      <thead>
+        <tr>
+          <Th>Name</Th>
+          <Th>Namespace</Th>
+          <Th>Kind</Th>
+          <Th>Type</Th>
+          <Th>Keys</Th>
+          <Th>Age</Th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((c) => (
+          <tr key={`${c.kind}/${c.namespace}/${c.name}`} className="hover:bg-surface-2/50">
+            <Td className="font-medium break-all text-ink">{c.name}</Td>
+            <Td className="text-ink-dim">{c.namespace}</Td>
+            <Td>
+              <Badge tone={c.kind === "Secret" ? "warn" : "idle"}>{c.kind}</Badge>
+            </Td>
+            <Td className="text-xs text-ink-faint">{c.type_ ?? "—"}</Td>
+            <Td className="max-w-xl text-xs text-ink-dim" title={c.keys.join("\n")}>
+              {c.keys.length === 0 ? (
+                <span className="text-ink-faint">none</span>
+              ) : (
+                <span className="font-mono break-all">{c.keys.join(", ")}</span>
+              )}
+            </Td>
+            <Td className="text-xs whitespace-nowrap text-ink-faint">{formatDuration(c.age)}</Td>
+          </tr>
+        ))}
+      </tbody>
+    </Table>
   );
 }

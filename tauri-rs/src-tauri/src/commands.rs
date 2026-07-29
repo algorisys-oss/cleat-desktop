@@ -1305,3 +1305,54 @@ pub async fn k8s_generate_from_compose(
 
     Ok(generate::Generated { yaml, warnings })
 }
+
+/// Recent cluster events, newest first.
+///
+/// The answer to "why is this pod Pending", which the pod object itself does
+/// not carry.
+#[tauri::command]
+pub async fn k8s_list_events(
+    state: State<'_, AppState>,
+    namespace: Option<String>,
+) -> AppResult<Vec<k8s_model::Event>> {
+    resources::list_events(state.kube_client().await?, namespace.as_deref()).await
+}
+
+/// ConfigMaps and Secrets together, since they are read as one thing.
+///
+/// Secret *values* are never fetched — only which keys exist. See
+/// `resources::list_secrets`.
+#[tauri::command]
+pub async fn k8s_list_config(
+    state: State<'_, AppState>,
+    namespace: Option<String>,
+) -> AppResult<Vec<k8s_model::ConfigEntry>> {
+    let client = state.kube_client().await?;
+    let (maps, secrets) = tokio::join!(
+        resources::list_configmaps(client.clone(), namespace.as_deref()),
+        resources::list_secrets(client, namespace.as_deref())
+    );
+    let mut all = maps?;
+    all.extend(secrets?);
+    all.sort_by(|a, b| a.namespace.cmp(&b.namespace).then(a.name.cmp(&b.name)));
+    Ok(all)
+}
+
+#[tauri::command]
+pub async fn k8s_scale_deployment(
+    state: State<'_, AppState>,
+    namespace: String,
+    name: String,
+    replicas: i32,
+) -> AppResult<()> {
+    resources::scale_deployment(state.kube_client().await?, &namespace, &name, replicas).await
+}
+
+#[tauri::command]
+pub async fn k8s_restart_deployment(
+    state: State<'_, AppState>,
+    namespace: String,
+    name: String,
+) -> AppResult<()> {
+    resources::restart_deployment(state.kube_client().await?, &namespace, &name).await
+}

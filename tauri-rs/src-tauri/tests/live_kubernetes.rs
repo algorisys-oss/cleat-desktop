@@ -289,3 +289,115 @@ async fn an_unknown_kind_fails_with_a_useful_message() {
         "error should name the unresolvable kind, got {error:?}"
     );
 }
+
+#[tokio::test]
+async fn lists_events() {
+    let Some(client) = client().await else { return };
+    let events = resources::list_events(client, None)
+        .await
+        .expect("list events");
+    for e in &events {
+        assert!(!e.object.is_empty(), "event with no involved object: {e:?}");
+        assert!(
+            e.type_ == "Normal" || e.type_ == "Warning",
+            "unexpected event type {:?}",
+            e.type_
+        );
+    }
+    // Newest first: ages must be non-decreasing down the list.
+    for pair in events.windows(2) {
+        assert!(
+            pair[0].age <= pair[1].age,
+            "events out of order: {} then {}",
+            pair[0].age,
+            pair[1].age
+        );
+    }
+}
+
+/// Secrets must come back as key *names* with no values anywhere in the DTO.
+#[tokio::test]
+async fn secrets_are_listed_without_their_values() {
+    let Some(client) = client().await else { return };
+    let secrets = resources::list_secrets(client, None)
+        .await
+        .expect("list secrets");
+    let Some(secret) = secrets.iter().find(|s| !s.keys.is_empty()) else {
+        eprintln!("skipping: no secrets with data on this cluster");
+        return;
+    };
+    // The DTO has no field for a value at all, so this asserts the shape that
+    // makes leaking one impossible rather than that a particular value is absent.
+    let json = serde_json::to_string(secret).expect("serialise");
+    assert!(json.contains("\"keys\""), "{json}");
+    assert!(
+        !json.contains("\"data\""),
+        "a secret DTO carried data: {json}"
+    );
+    assert!(
+        !json.contains("\"value\""),
+        "a secret DTO carried a value: {json}"
+    );
+}
+
+/// Scale down and back up on a deployment this test creates.
+#[tokio::test]
+async fn scales_and_restarts_a_deployment() {
+    let Some(client) = client().await else { return };
+    const NS: &str = "default";
+    const NAME: &str = "cleat-test-scale";
+    let yaml = format!(
+        r#"apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {NAME}
+  namespace: {NS}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {NAME}
+  template:
+    metadata:
+      labels:
+        app: {NAME}
+    spec:
+      containers:
+        - name: c
+          image: busybox
+          command: ["sh", "-c", "sleep 3600"]
+"#
+    );
+
+    cleat_lib::k8s::manifests::apply(client.clone(), &yaml, None, false)
+        .await
+        .expect("create deployment");
+
+    let outcome = async {
+        resources::scale_deployment(client.clone(), NS, NAME, 2).await?;
+        let after = resources::list_deployments(client.clone(), Some(NS)).await?;
+        let d = after
+            .iter()
+            .find(|d| d.name == NAME)
+            .expect("deployment present after scale");
+        assert!(
+            d.ready.ends_with("/2"),
+            "expected a desired count of 2, got {:?}",
+            d.ready
+        );
+
+        // Restart is a template annotation, not a delete — it must succeed and
+        // leave the deployment in place.
+        resources::restart_deployment(client.clone(), NS, NAME).await?;
+        let still = resources::list_deployments(client.clone(), Some(NS)).await?;
+        assert!(
+            still.iter().any(|d| d.name == NAME),
+            "restart removed the deployment"
+        );
+        Ok::<(), cleat_lib::error::AppError>(())
+    }
+    .await;
+
+    let _ = cleat_lib::k8s::manifests::delete(client, &yaml, None).await;
+    outcome.expect("scale/restart");
+}

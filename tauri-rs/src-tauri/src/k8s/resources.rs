@@ -4,13 +4,13 @@
 //! layer never has to know how a client is built. `None` for a namespace means
 //! all namespaces, matching `kubectl -A`.
 
-use super::model::{Deployment, Namespace, Node, Pod, Service};
+use super::model::{ConfigEntry, Deployment, Event, Namespace, Node, Pod, Service};
 use crate::error::{AppError, AppResult};
 use k8s_openapi::api::apps::v1::Deployment as K8sDeployment;
 use k8s_openapi::api::core::v1::{
     Namespace as K8sNamespace, Node as K8sNode, Pod as K8sPod, Service as K8sService,
 };
-use kube::api::{Api, DeleteParams, ListParams, LogParams};
+use kube::api::{Api, DeleteParams, ListParams, LogParams, Patch, PatchParams};
 use kube::{Client, ResourceExt};
 
 /// Seconds since `creation_timestamp`.
@@ -398,4 +398,154 @@ pub async fn follow_pod_logs(
     Ok(Box::pin(reader.lines().map(|line| {
         line.map_err(|e| AppError::Other(format!("reading log stream: {e}")))
     })))
+}
+
+/// Recent events, newest first.
+///
+/// Sorted by last-seen rather than creation: a warning that fired once an hour
+/// ago and again ten seconds ago is current, and ordering by creation buries it.
+pub async fn list_events(client: Client, namespace: Option<&str>) -> AppResult<Vec<Event>> {
+    use k8s_openapi::api::core::v1::Event as K8sEvent;
+
+    let api: Api<K8sEvent> = api_for(client, namespace);
+    let list = api
+        .list(&ListParams::default())
+        .await
+        .map_err(|e| list_error("events", e))?;
+
+    let mut events: Vec<Event> = list
+        .items
+        .into_iter()
+        .map(|e| {
+            // `last_timestamp` is the classic field; newer clusters may only
+            // populate `event_time`, and falling back keeps events from
+            // vanishing on those.
+            let seen = e
+                .last_timestamp
+                .as_ref()
+                .map(|t| t.0.as_second())
+                .or_else(|| e.event_time.as_ref().map(|t| t.0.as_second()))
+                .unwrap_or(0);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(seen);
+
+            Event {
+                namespace: e.metadata.namespace.clone().unwrap_or_default(),
+                type_: e.type_.unwrap_or_else(|| "Normal".into()),
+                reason: e.reason.unwrap_or_default(),
+                message: e.message.unwrap_or_default(),
+                object: format!(
+                    "{}/{}",
+                    e.involved_object.kind.unwrap_or_default(),
+                    e.involved_object.name.unwrap_or_default()
+                ),
+                count: e.count.unwrap_or(1),
+                age: if seen == 0 { 0 } else { (now - seen).max(0) },
+            }
+        })
+        .collect();
+
+    events.sort_by_key(|e| e.age);
+    Ok(events)
+}
+
+pub async fn list_configmaps(
+    client: Client,
+    namespace: Option<&str>,
+) -> AppResult<Vec<ConfigEntry>> {
+    use k8s_openapi::api::core::v1::ConfigMap;
+
+    let api: Api<ConfigMap> = api_for(client, namespace);
+    let list = api
+        .list(&ListParams::default())
+        .await
+        .map_err(|e| list_error("config maps", e))?;
+
+    Ok(list
+        .items
+        .into_iter()
+        .map(|cm| ConfigEntry {
+            name: cm.name_any(),
+            namespace: cm.namespace().unwrap_or_default(),
+            kind: "ConfigMap".into(),
+            type_: None,
+            keys: cm.data.map(|d| d.into_keys().collect()).unwrap_or_default(),
+            age: age_of(&cm.metadata),
+        })
+        .collect())
+}
+
+/// Secrets, as names and key names only.
+///
+/// The values are deliberately never read, let alone returned. Cleat's whole
+/// stance on credentials is that it does not hold them — reading a Secret's
+/// contents into the app would put cluster credentials in a process that had no
+/// reason to have them, and one screenshot away from a bug report. Knowing
+/// *which* keys exist is what the UI actually needs.
+pub async fn list_secrets(client: Client, namespace: Option<&str>) -> AppResult<Vec<ConfigEntry>> {
+    use k8s_openapi::api::core::v1::Secret;
+
+    let api: Api<Secret> = api_for(client, namespace);
+    let list = api
+        .list(&ListParams::default())
+        .await
+        .map_err(|e| list_error("secrets", e))?;
+
+    Ok(list
+        .items
+        .into_iter()
+        .map(|s| ConfigEntry {
+            name: s.name_any(),
+            namespace: s.namespace().unwrap_or_default(),
+            kind: "Secret".into(),
+            type_: s.type_.clone(),
+            keys: s.data.map(|d| d.into_keys().collect()).unwrap_or_default(),
+            age: age_of(&s.metadata),
+        })
+        .collect())
+}
+
+/// Set a deployment's replica count.
+pub async fn scale_deployment(
+    client: Client,
+    namespace: &str,
+    name: &str,
+    replicas: i32,
+) -> AppResult<()> {
+    if replicas < 0 {
+        return Err(AppError::Invalid("replicas cannot be negative".into()));
+    }
+    let api: Api<K8sDeployment> = Api::namespaced(client, namespace);
+    let patch = serde_json::json!({ "spec": { "replicas": replicas } });
+    api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+        .map_err(|e| AppError::Other(format!("scaling {name}: {e}")))?;
+    Ok(())
+}
+
+/// Roll a deployment's pods, the way `kubectl rollout restart` does.
+///
+/// There is no restart verb in the API. What the CLI actually does is stamp an
+/// annotation on the pod template, which changes the template hash and makes
+/// the controller roll out new pods — a real rolling restart rather than
+/// deleting pods and hoping. Reimplemented here rather than shelling out to
+/// kubectl, which Cleat does not depend on.
+pub async fn restart_deployment(client: Client, namespace: &str, name: &str) -> AppResult<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let api: Api<K8sDeployment> = Api::namespaced(client, namespace);
+    let patch = serde_json::json!({
+        "spec": { "template": { "metadata": { "annotations": {
+            "cleat.dev/restartedAt": now.to_string()
+        }}}}
+    });
+    api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+        .map_err(|e| AppError::Other(format!("restarting {name}: {e}")))?;
+    Ok(())
 }

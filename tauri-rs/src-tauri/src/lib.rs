@@ -117,6 +117,10 @@ pub fn run() {
             commands::k8s_ensure_namespace,
             commands::k8s_generate_from_container,
             commands::k8s_generate_from_compose,
+            commands::k8s_list_events,
+            commands::k8s_list_config,
+            commands::k8s_scale_deployment,
+            commands::k8s_restart_deployment,
             // activity
             commands::activity_log,
             commands::clear_activity_log,

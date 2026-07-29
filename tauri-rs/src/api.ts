@@ -17,7 +17,9 @@ import type {
   Network,
   ClusterInfo,
   GeneratedManifest,
+  K8sConfigEntry,
   K8sDeployment,
+  K8sEvent,
   K8sNamespace,
   K8sNode,
   K8sPod,
@@ -460,3 +462,12 @@ export const k8sGenerateFromCompose = (
     replicas,
     includeService,
   });
+
+export const k8sListEvents = (namespace: string | null) =>
+  invoke<K8sEvent[]>("k8s_list_events", { namespace });
+export const k8sListConfig = (namespace: string | null) =>
+  invoke<K8sConfigEntry[]>("k8s_list_config", { namespace });
+export const k8sScaleDeployment = (namespace: string, name: string, replicas: number) =>
+  invoke<void>("k8s_scale_deployment", { namespace, name, replicas });
+export const k8sRestartDeployment = (namespace: string, name: string) =>
+  invoke<void>("k8s_restart_deployment", { namespace, name });

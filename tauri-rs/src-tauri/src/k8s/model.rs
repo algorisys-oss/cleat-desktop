@@ -105,3 +105,38 @@ pub struct Node {
     pub age: i64,
     pub internal_ip: Option<String>,
 }
+
+/// A cluster event.
+///
+/// The single most useful thing when a pod will not start — "why is this
+/// Pending" is answered here and nowhere else. Without it, diagnosing a
+/// scheduling failure means dropping to `kubectl describe`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Event {
+    pub namespace: String,
+    /// `Normal` or `Warning`.
+    pub type_: String,
+    pub reason: String,
+    pub message: String,
+    /// `Pod/web-abc123`, so an event can be tied to what it is about.
+    pub object: String,
+    pub count: i32,
+    /// Seconds since the event was last seen.
+    pub age: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigEntry {
+    pub name: String,
+    pub namespace: String,
+    /// `ConfigMap` or `Secret`, so one table can carry both.
+    pub kind: String,
+    /// For a Secret, its type (`Opaque`, `kubernetes.io/tls`, …).
+    pub type_: Option<String>,
+    /// Key *names* only. Secret values are never read — see the note on
+    /// `list_secrets`.
+    pub keys: Vec<String>,
+    pub age: i64,
+}

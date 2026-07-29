@@ -316,3 +316,33 @@ export interface GeneratedManifest {
   yaml: string;
   warnings: GenerateWarning[];
 }
+
+/** A cluster event — the answer to "why is this pod Pending". */
+export interface K8sEvent {
+  namespace: string;
+  /** Normal | Warning */
+  type_: string;
+  reason: string;
+  message: string;
+  /** `Pod/web-abc123` */
+  object: string;
+  count: number;
+  /** Seconds since last seen. */
+  age: number;
+}
+
+/**
+ * A ConfigMap or a Secret.
+ *
+ * `keys` are key *names* only. Secret values are never fetched — putting
+ * cluster credentials into this process would give it something it has no
+ * reason to hold, and one screenshot away from a bug report.
+ */
+export interface K8sConfigEntry {
+  name: string;
+  namespace: string;
+  kind: string;
+  type_: string | null;
+  keys: string[];
+  age: number;
+}
