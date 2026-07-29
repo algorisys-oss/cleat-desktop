@@ -40,9 +40,8 @@ export default function App() {
 
 function Shell() {
   const [view, setView] = useState<ViewId>("dashboard");
-  // Persisted rather than per-session: a sidebar that springs back open every
-  // launch is worse than one that never collapsed.
-  const [collapsed, setCollapsed] = usePersisted("cleat.sidebar.collapsed", false);
+  // Collapsed by default; persisted, so anyone who expands it keeps that.
+  const [collapsed, setCollapsed] = usePersisted("cleat.sidebar.collapsed", true);
   const [runtimes, setRuntimes] = useState<RuntimeInfo[]>([]);
   const [active, setActive] = useState<RuntimeKind | null>(null);
   const [booting, setBooting] = useState(true);
@@ -135,7 +134,7 @@ function Shell() {
     <div className="flex h-full">
       <aside
         className={`no-select flex shrink-0 flex-col border-r border-edge bg-surface-1 transition-[width] duration-150 ${
-          collapsed ? "w-[74px]" : "w-52"
+          collapsed ? "w-[92px]" : "w-52"
         }`}
       >
         <div
