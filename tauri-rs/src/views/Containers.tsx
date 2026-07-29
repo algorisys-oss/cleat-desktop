@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../api";
-import { useBusyMap, useDebounced, usePolled } from "../hooks";
+import { useBusyMap, useDebounced, usePolled, useSelection } from "../hooks";
 import type { Container, LogLine, ServiceEntry, Stats } from "../types";
 import {
   Badge,
+  BulkBar,
+  BulkResultDialog,
   Button,
   CodeBlock,
   ConfirmDialog,
@@ -13,6 +15,7 @@ import {
   Input,
   Modal,
   Panel,
+  SelectBox,
   Select,
   Spinner,
   Table,
@@ -20,7 +23,16 @@ import {
   Th,
   useToast,
 } from "../ui";
-import { formatAge, formatBytes, formatPorts, healthTone, shortId, stateTone } from "../util";
+import {
+  formatAge,
+  formatBytes,
+  formatPorts,
+  healthTone,
+  runBulk,
+  shortId,
+  stateTone,
+  type BulkFailure,
+} from "../util";
 import ExecTerminal from "./ExecTerminal";
 import RunImage from "./RunImage";
 
@@ -40,6 +52,16 @@ export default function Containers() {
   const [servicesFor, setServicesFor] = useState<Container | null>(null);
   const [removing, setRemoving] = useState<Container | null>(null);
   const [removeVolumes, setRemoveVolumes] = useState(false);
+  const [bulkRemoving, setBulkRemoving] = useState(false);
+  const [bulkVerb, setBulkVerb] = useState<string | null>(null);
+  const [bulkResult, setBulkResult] = useState<{
+    verb: string;
+    done: number;
+    failures: BulkFailure[];
+  } | null>(null);
+
+  const knownIds = useMemo(() => (containers.data ?? []).map((c) => c.id), [containers.data]);
+  const selection = useSelection(knownIds);
 
   const rows = useMemo(() => {
     const list = containers.data ?? [];
@@ -71,6 +93,37 @@ export default function Containers() {
         toast.failure(e);
       }
     });
+  };
+
+  const visibleIds = useMemo(() => rows.map((c) => c.id), [rows]);
+  const selectedRows = useMemo(
+    () => (containers.data ?? []).filter((c) => selection.selected.has(c.id)),
+    [containers.data, selection.selected],
+  );
+  // Bulk actions apply to the eligible subset rather than erroring on the rest:
+  // starting a selection that is half running should start the other half, not
+  // report "container already started" five times.
+  const startable = selectedRows.filter((c) => c.state !== "running" && c.state !== "paused");
+  const liveSelected = selectedRows.filter((c) => c.state === "running" || c.state === "paused");
+
+  const bulk = async (
+    verb: string,
+    past: string,
+    targets: Container[],
+    fn: (c: Container) => Promise<unknown>,
+  ) => {
+    if (targets.length === 0) return;
+    setBulkVerb(verb);
+    const result = await runBulk(targets, (c) => c.name, fn);
+    setBulkVerb(null);
+    containers.reload();
+    if (result.failures.length === 0) {
+      toast.success(`${result.done} container${result.done === 1 ? "" : "s"} ${past}`);
+      selection.clear();
+    } else {
+      // Selection is left alone so the failures stay visible and retryable.
+      setBulkResult({ verb: past, done: result.done, failures: result.failures });
+    }
   };
 
   if (containers.error && containers.initial) {
@@ -107,6 +160,64 @@ export default function Containers() {
         </div>
       </div>
 
+      {selection.size > 0 && (
+        <BulkBar count={selection.size} noun="container" onClear={selection.clear}>
+          <Button
+            size="sm"
+            variant="ghost"
+            busy={bulkVerb === "start"}
+            disabled={startable.length === 0 || !!bulkVerb}
+            title={
+              startable.length === 0
+                ? "Every selected container is already running"
+                : `Start ${startable.length} stopped container(s)`
+            }
+            onClick={() =>
+              bulk("start", "started", startable, (c) => api.startContainer(c.id))
+            }
+          >
+            Start {startable.length > 0 && startable.length}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            busy={bulkVerb === "stop"}
+            disabled={liveSelected.length === 0 || !!bulkVerb}
+            title={
+              liveSelected.length === 0
+                ? "No selected container is running"
+                : `Stop ${liveSelected.length} running container(s)`
+            }
+            onClick={() => bulk("stop", "stopped", liveSelected, (c) => api.stopContainer(c.id))}
+          >
+            Stop {liveSelected.length > 0 && liveSelected.length}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            busy={bulkVerb === "restart"}
+            disabled={liveSelected.length === 0 || !!bulkVerb}
+            onClick={() =>
+              bulk("restart", "restarted", liveSelected, (c) => api.restartContainer(c.id))
+            }
+          >
+            Restart {liveSelected.length > 0 && liveSelected.length}
+          </Button>
+          <Button
+            size="sm"
+            variant="danger"
+            busy={bulkVerb === "remove"}
+            disabled={!!bulkVerb}
+            onClick={() => {
+              setRemoveVolumes(false);
+              setBulkRemoving(true);
+            }}
+          >
+            Remove {selection.size}
+          </Button>
+        </BulkBar>
+      )}
+
       <Panel className="min-h-0 flex-1 overflow-auto">
         {containers.initial ? (
           <div className="flex justify-center py-16">
@@ -127,6 +238,19 @@ export default function Containers() {
           <Table>
             <thead>
               <tr>
+                <Th className="w-8">
+                  <SelectBox
+                    label="Select all shown containers"
+                    checked={rows.every((c) => selection.selected.has(c.id))}
+                    indeterminate={rows.some((c) => selection.selected.has(c.id))}
+                    onToggle={() =>
+                      selection.setMany(
+                        visibleIds,
+                        !rows.every((c) => selection.selected.has(c.id)),
+                      )
+                    }
+                  />
+                </Th>
                 <Th className="w-8" />
                 <Th>Name</Th>
                 <Th>Image</Th>
@@ -141,7 +265,19 @@ export default function Containers() {
                 const running = c.state === "running";
                 const paused = c.state === "paused";
                 return (
-                  <tr key={c.id} className="group hover:bg-surface-2/50">
+                  <tr
+                    key={c.id}
+                    className={`group hover:bg-surface-2/50 ${
+                      selection.selected.has(c.id) ? "bg-accent/8" : ""
+                    }`}
+                  >
+                    <Td>
+                      <SelectBox
+                        label={`Select ${c.name}`}
+                        checked={selection.selected.has(c.id)}
+                        onToggle={(extend) => selection.toggle(c.id, visibleIds, extend)}
+                      />
+                    </Td>
                     <Td>
                       <Dot tone={stateTone(c.state)} />
                     </Td>
@@ -333,6 +469,59 @@ export default function Containers() {
             Also remove anonymous volumes
           </label>
         }
+      />
+
+      <ConfirmDialog
+        open={bulkRemoving}
+        title={`Remove ${selection.size} container${selection.size === 1 ? "" : "s"}?`}
+        confirmLabel={`Remove ${selection.size}`}
+        onCancel={() => setBulkRemoving(false)}
+        onConfirm={() => {
+          setBulkRemoving(false);
+          void bulk("remove", "removed", selectedRows, (c) =>
+            api.removeContainer(c.id, true, removeVolumes),
+          );
+        }}
+        body={
+          <>
+            <p>
+              This force-removes {selection.size} container
+              {selection.size === 1 ? "" : "s"}
+              {liveSelected.length > 0 &&
+                `, stopping ${liveSelected.length} that ${
+                  liveSelected.length === 1 ? "is" : "are"
+                } still running`}
+              . This cannot be undone.
+            </p>
+            <ul className="max-h-40 space-y-0.5 overflow-auto text-xs text-ink-faint">
+              {selectedRows.map((c) => (
+                <li key={c.id} className="truncate">
+                  {c.name}
+                </li>
+              ))}
+            </ul>
+          </>
+        }
+        extra={
+          <label className="flex items-center gap-2 text-xs text-ink-dim">
+            <input
+              type="checkbox"
+              checked={removeVolumes}
+              onChange={(e) => setRemoveVolumes(e.target.checked)}
+              className="accent-danger"
+            />
+            Also remove anonymous volumes
+          </label>
+        }
+      />
+
+      <BulkResultDialog
+        open={!!bulkResult}
+        title="Some containers were not updated"
+        done={bulkResult?.done ?? 0}
+        verb={bulkResult?.verb ?? ""}
+        failures={bulkResult?.failures ?? []}
+        onClose={() => setBulkResult(null)}
       />
     </div>
   );

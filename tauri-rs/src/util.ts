@@ -1,3 +1,53 @@
+import { errorMessage } from "./types";
+
+export interface BulkFailure {
+  label: string;
+  message: string;
+}
+
+export interface BulkResult {
+  done: number;
+  failures: BulkFailure[];
+}
+
+/**
+ * Apply a single-resource command across a selection.
+ *
+ * There is no batch endpoint on either runtime — this is N calls either way, so
+ * the only decisions are how many are in flight and what happens when one
+ * fails. A few at a time keeps a bulk stop fast without burying an already
+ * loaded daemon under fifty simultaneous requests, and a failure is collected
+ * rather than thrown: one container that refuses to stop must not strand the
+ * other forty-nine.
+ */
+export async function runBulk<T>(
+  items: T[],
+  label: (item: T) => string,
+  fn: (item: T) => Promise<unknown>,
+  limit = 4,
+): Promise<BulkResult> {
+  const failures: BulkFailure[] = [];
+  let done = 0;
+  let cursor = 0;
+
+  const worker = async () => {
+    // Single-threaded, so claiming an index and advancing the cursor cannot
+    // interleave with another worker doing the same.
+    while (cursor < items.length) {
+      const item = items[cursor++];
+      try {
+        await fn(item);
+        done++;
+      } catch (e) {
+        failures.push({ label: label(item), message: errorMessage(e) });
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return { done, failures };
+}
+
 export function formatBytes(bytes: number | null | undefined, digits = 1): string {
   if (bytes === null || bytes === undefined) return "—";
   if (bytes < 0) return "—";

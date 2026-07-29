@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import * as api from "../api";
-import { useBusyMap, useDebounced, usePolled } from "../hooks";
+import { useBusyMap, useDebounced, usePolled, useSelection } from "../hooks";
 import type { Network } from "../types";
 import {
   Badge,
+  BulkBar,
+  BulkResultDialog,
   Button,
   CodeBlock,
   ConfirmDialog,
@@ -12,6 +14,7 @@ import {
   Input,
   Modal,
   Panel,
+  SelectBox,
   Select,
   Spinner,
   Table,
@@ -19,7 +22,7 @@ import {
   Th,
   useToast,
 } from "../ui";
-import { shortId } from "../util";
+import { runBulk, shortId, type BulkFailure } from "../util";
 
 /** Networks Docker creates itself and refuses to delete. */
 const BUILTIN = new Set(["bridge", "host", "none", "podman"]);
@@ -34,6 +37,19 @@ export default function Networks() {
   const [creating, setCreating] = useState(false);
   const [removing, setRemoving] = useState<Network | null>(null);
   const [inspecting, setInspecting] = useState<Network | null>(null);
+  const [bulkRemoving, setBulkRemoving] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState<{ done: number; failures: BulkFailure[] } | null>(
+    null,
+  );
+
+  // Built-ins are excluded from selection entirely rather than selected and
+  // then refused — the only bulk action here is one they can never take part in.
+  const knownIds = useMemo(
+    () => (networks.data ?? []).filter((n) => !BUILTIN.has(n.name)).map((n) => n.id),
+    [networks.data],
+  );
+  const selection = useSelection(knownIds);
 
   const rows = useMemo(() => {
     const list = networks.data ?? [];
@@ -45,6 +61,31 @@ export default function Networks() {
       : list;
     return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
   }, [networks.data, search]);
+
+  const selectableRows = useMemo(() => rows.filter((n) => !BUILTIN.has(n.name)), [rows]);
+  const visibleIds = useMemo(() => selectableRows.map((n) => n.id), [selectableRows]);
+  const selectedRows = useMemo(
+    () => (networks.data ?? []).filter((n) => selection.selected.has(n.id)),
+    [networks.data, selection.selected],
+  );
+  const selectedAttached = selectedRows.filter((n) => n.containers.length > 0).length;
+
+  const removeSelected = async () => {
+    setBulkBusy(true);
+    const result = await runBulk(
+      selectedRows,
+      (n) => n.name,
+      (n) => api.removeNetwork(n.id),
+    );
+    setBulkBusy(false);
+    networks.reload();
+    if (result.failures.length === 0) {
+      toast.success(`${result.done} network${result.done === 1 ? "" : "s"} removed`);
+      selection.clear();
+    } else {
+      setBulkResult(result);
+    }
+  };
 
   if (networks.error && networks.initial) {
     return <ErrorNote error={networks.error} onRetry={networks.reload} />;
@@ -71,6 +112,19 @@ export default function Networks() {
         </div>
       </div>
 
+      {selection.size > 0 && (
+        <BulkBar count={selection.size} noun="network" onClear={selection.clear}>
+          <Button size="sm" variant="danger" busy={bulkBusy} onClick={() => setBulkRemoving(true)}>
+            Remove {selection.size}
+          </Button>
+          {selectedAttached > 0 && (
+            <span className="text-xs text-warn">
+              {selectedAttached} still {selectedAttached === 1 ? "has" : "have"} containers attached
+            </span>
+          )}
+        </BulkBar>
+      )}
+
       <Panel className="min-h-0 flex-1 overflow-auto">
         {networks.initial ? (
           <div className="flex justify-center py-16">
@@ -82,6 +136,22 @@ export default function Networks() {
           <Table>
             <thead>
               <tr>
+                <Th className="w-8">
+                  <SelectBox
+                    label="Select all removable networks shown"
+                    checked={
+                      selectableRows.length > 0 &&
+                      selectableRows.every((n) => selection.selected.has(n.id))
+                    }
+                    indeterminate={selectableRows.some((n) => selection.selected.has(n.id))}
+                    onToggle={() =>
+                      selection.setMany(
+                        visibleIds,
+                        !selectableRows.every((n) => selection.selected.has(n.id)),
+                      )
+                    }
+                  />
+                </Th>
                 <Th>Name</Th>
                 <Th>Driver</Th>
                 <Th>Scope</Th>
@@ -92,7 +162,21 @@ export default function Networks() {
             </thead>
             <tbody>
               {rows.map((n) => (
-                <tr key={n.id} className="hover:bg-surface-2/50">
+                <tr
+                  key={n.id}
+                  className={`hover:bg-surface-2/50 ${
+                    selection.selected.has(n.id) ? "bg-accent/8" : ""
+                  }`}
+                >
+                  <Td>
+                    {!BUILTIN.has(n.name) && (
+                      <SelectBox
+                        label={`Select ${n.name}`}
+                        checked={selection.selected.has(n.id)}
+                        onToggle={(extend) => selection.toggle(n.id, visibleIds, extend)}
+                      />
+                    )}
+                  </Td>
                   <Td>
                     <div className="flex items-center gap-1.5">
                       <span className="font-medium text-ink">{n.name}</span>
@@ -190,6 +274,51 @@ export default function Networks() {
             <p>This deletes the network definition.</p>
           )
         }
+      />
+
+      <ConfirmDialog
+        open={bulkRemoving}
+        title={`Remove ${selection.size} network${selection.size === 1 ? "" : "s"}?`}
+        confirmLabel={`Remove ${selection.size}`}
+        onCancel={() => setBulkRemoving(false)}
+        onConfirm={() => {
+          setBulkRemoving(false);
+          void removeSelected();
+        }}
+        body={
+          <>
+            <p>
+              This deletes {selection.size} network definition
+              {selection.size === 1 ? "" : "s"}.
+              {selectedAttached > 0 && (
+                <>
+                  {" "}
+                  <span className="text-warn">
+                    {selectedAttached} still {selectedAttached === 1 ? "has" : "have"} containers
+                    attached
+                  </span>{" "}
+                  and will be refused until those are disconnected.
+                </>
+              )}
+            </p>
+            <ul className="max-h-40 space-y-0.5 overflow-auto text-xs text-ink-faint">
+              {selectedRows.map((n) => (
+                <li key={n.id} className="truncate">
+                  {n.name}
+                </li>
+              ))}
+            </ul>
+          </>
+        }
+      />
+
+      <BulkResultDialog
+        open={!!bulkResult}
+        title="Some networks were not removed"
+        done={bulkResult?.done ?? 0}
+        verb="removed"
+        failures={bulkResult?.failures ?? []}
+        onClose={() => setBulkResult(null)}
       />
     </div>
   );

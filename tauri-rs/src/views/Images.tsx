@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import * as api from "../api";
-import { useBusyMap, useDebounced, usePolled } from "../hooks";
+import { useBusyMap, useDebounced, usePolled, useSelection } from "../hooks";
 import type { Image, ImageTransferProgress, PullProgress, RuntimeInfo, RuntimeKind } from "../types";
 import {
   Badge,
+  BulkBar,
+  BulkResultDialog,
   Button,
   CodeBlock,
   ConfirmDialog,
@@ -12,6 +14,7 @@ import {
   Input,
   Modal,
   Panel,
+  SelectBox,
   Spinner,
   Table,
   Td,
@@ -19,7 +22,14 @@ import {
   useToast,
 } from "../ui";
 import { errorMessage } from "../types";
-import { formatAge, formatBytes, primaryTag, shortId } from "../util";
+import {
+  formatAge,
+  formatBytes,
+  primaryTag,
+  runBulk,
+  shortId,
+  type BulkFailure,
+} from "../util";
 import RunImage from "./RunImage";
 
 export default function Images() {
@@ -57,6 +67,15 @@ export default function Images() {
   const [pruning, setPruning] = useState(false);
   const [running, setRunning] = useState<string | null>(null);
 
+  const [bulkRemoving, setBulkRemoving] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState<{ done: number; failures: BulkFailure[] } | null>(
+    null,
+  );
+
+  const knownIds = useMemo(() => (images.data ?? []).map((i) => i.id), [images.data]);
+  const selection = useSelection(knownIds);
+
   const rows = useMemo(() => {
     const list = images.data ?? [];
     const q = search.trim().toLowerCase();
@@ -71,6 +90,33 @@ export default function Images() {
   }, [images.data, search]);
 
   const totalSize = useMemo(() => rows.reduce((sum, i) => sum + i.size, 0), [rows]);
+
+  const visibleIds = useMemo(() => rows.map((i) => i.id), [rows]);
+  const selectedRows = useMemo(
+    () => (images.data ?? []).filter((i) => selection.selected.has(i.id)),
+    [images.data, selection.selected],
+  );
+  const selectedSize = selectedRows.reduce((sum, i) => sum + i.size, 0);
+  const selectedInUse = selectedRows.filter((i) => i.containers > 0).length;
+
+  const removeSelected = async () => {
+    setBulkBusy(true);
+    const result = await runBulk(
+      selectedRows,
+      (i) => primaryTag(i.repoTags),
+      // Force for the same reason the single-image path does: a layer with more
+      // than one tag, or one a container still references, is refused otherwise.
+      (i) => api.removeImage(i.id, i.repoTags.length > 1 || i.containers > 0),
+    );
+    setBulkBusy(false);
+    images.reload();
+    if (result.failures.length === 0) {
+      toast.success(`${result.done} image${result.done === 1 ? "" : "s"} removed`);
+      selection.clear();
+    } else {
+      setBulkResult(result);
+    }
+  };
 
   if (images.error && images.initial) {
     return <ErrorNote error={images.error} onRetry={images.reload} />;
@@ -102,6 +148,20 @@ export default function Images() {
         </div>
       </div>
 
+      {selection.size > 0 && (
+        <BulkBar count={selection.size} noun="image" onClear={selection.clear}>
+          <Button
+            size="sm"
+            variant="danger"
+            busy={bulkBusy}
+            onClick={() => setBulkRemoving(true)}
+          >
+            Remove {selection.size}
+          </Button>
+          <span className="text-xs text-ink-faint">{formatBytes(selectedSize)}</span>
+        </BulkBar>
+      )}
+
       <Panel className="min-h-0 flex-1 overflow-auto">
         {images.initial ? (
           <div className="flex justify-center py-16">
@@ -123,6 +183,19 @@ export default function Images() {
           <Table>
             <thead>
               <tr>
+                <Th className="w-8">
+                  <SelectBox
+                    label="Select all shown images"
+                    checked={rows.every((i) => selection.selected.has(i.id))}
+                    indeterminate={rows.some((i) => selection.selected.has(i.id))}
+                    onToggle={() =>
+                      selection.setMany(
+                        visibleIds,
+                        !rows.every((i) => selection.selected.has(i.id)),
+                      )
+                    }
+                  />
+                </Th>
                 <Th>Repository / Tag</Th>
                 <Th>Image ID</Th>
                 <Th>Size</Th>
@@ -133,7 +206,19 @@ export default function Images() {
             </thead>
             <tbody>
               {rows.map((i) => (
-                <tr key={i.id} className="hover:bg-surface-2/50">
+                <tr
+                  key={i.id}
+                  className={`hover:bg-surface-2/50 ${
+                    selection.selected.has(i.id) ? "bg-accent/8" : ""
+                  }`}
+                >
+                  <Td>
+                    <SelectBox
+                      label={`Select ${primaryTag(i.repoTags)}`}
+                      checked={selection.selected.has(i.id)}
+                      onToggle={(extend) => selection.toggle(i.id, visibleIds, extend)}
+                    />
+                  </Td>
                   <Td>
                     <div className="font-medium text-ink">{primaryTag(i.repoTags)}</div>
                     {i.repoTags.length > 1 && (
@@ -270,6 +355,45 @@ export default function Images() {
           }
         }}
         body={<p>Removes every dangling image not referenced by a container.</p>}
+      />
+
+      <ConfirmDialog
+        open={bulkRemoving}
+        title={`Remove ${selection.size} image${selection.size === 1 ? "" : "s"}?`}
+        confirmLabel={`Remove ${selection.size}`}
+        onCancel={() => setBulkRemoving(false)}
+        onConfirm={() => {
+          setBulkRemoving(false);
+          void removeSelected();
+        }}
+        body={
+          <>
+            <p>
+              This deletes the layers from disk, reclaiming up to{" "}
+              {formatBytes(selectedSize)}.
+              {selectedInUse > 0 &&
+                ` ${selectedInUse} of them ${
+                  selectedInUse === 1 ? "is" : "are"
+                } still used by a container; removal will be forced.`}
+            </p>
+            <ul className="max-h-40 space-y-0.5 overflow-auto text-xs text-ink-faint">
+              {selectedRows.map((i) => (
+                <li key={i.id} className="truncate">
+                  {primaryTag(i.repoTags)}
+                </li>
+              ))}
+            </ul>
+          </>
+        }
+      />
+
+      <BulkResultDialog
+        open={!!bulkResult}
+        title="Some images were not removed"
+        done={bulkResult?.done ?? 0}
+        verb="removed"
+        failures={bulkResult?.failures ?? []}
+        onClose={() => setBulkResult(null)}
       />
     </div>
   );

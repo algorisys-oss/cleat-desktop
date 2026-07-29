@@ -287,6 +287,132 @@ export function ConfirmDialog({
   );
 }
 
+// ========================================================== bulk selection
+
+/**
+ * Toolbar that appears once rows are selected.
+ *
+ * It sits below the filter row rather than replacing it: a selection outlives
+ * the filter, so "select the nginx ones, then filter to redis and select those
+ * too" has to stay possible.
+ */
+export function BulkBar({
+  count,
+  noun,
+  onClear,
+  children,
+}: {
+  count: number;
+  noun: string;
+  onClear: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5">
+      <span className="text-xs font-medium text-accent">
+        {count} {noun}
+        {count === 1 ? "" : "s"} selected
+      </span>
+      <div className="flex items-center gap-1">{children}</div>
+      <Button size="sm" variant="ghost" className="ml-auto" onClick={onClear}>
+        Clear selection
+      </Button>
+    </div>
+  );
+}
+
+/** Row / header checkbox. `indeterminate` is DOM-only, hence the ref. */
+export function SelectBox({
+  checked,
+  indeterminate = false,
+  onToggle,
+  label,
+}: {
+  checked: boolean;
+  indeterminate?: boolean;
+  onToggle: (extend: boolean) => void;
+  label: string;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = indeterminate && !checked;
+  }, [indeterminate, checked]);
+
+  return (
+    <input
+      ref={ref}
+      type="checkbox"
+      aria-label={label}
+      checked={checked}
+      className="accent-accent align-middle"
+      // Shift-click extends from the last plain click; the browser would
+      // otherwise treat it as an ordinary toggle.
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle(e.shiftKey);
+      }}
+      onChange={() => {}}
+    />
+  );
+}
+
+/**
+ * What a bulk action actually did.
+ *
+ * Bulk work is partially successful far more often than not — half the
+ * selection stops and the rest were already exited — so the outcome is a list,
+ * not a single toast. Only failures are enumerated; the successes are a count.
+ */
+export function BulkResultDialog({
+  open,
+  title,
+  done,
+  verb,
+  failures,
+  onClose,
+}: {
+  open: boolean;
+  title: string;
+  done: number;
+  verb: string;
+  failures: { label: string; message: string }[];
+  onClose: () => void;
+}) {
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={title}
+      width="max-w-lg"
+      footer={
+        <Button variant="subtle" onClick={onClose}>
+          Close
+        </Button>
+      }
+    >
+      <div className="space-y-3 px-5 py-4">
+        <div className="text-sm text-ink-dim">
+          {done} {verb}, {failures.length} failed.
+        </div>
+        <div className="max-h-72 space-y-2 overflow-auto">
+          {failures.map((f, idx) => (
+            <div
+              // Labels are not unique — two untagged images share one.
+              key={`${f.label}:${idx}`}
+              className="rounded border border-danger/30 bg-danger/10 px-3 py-2"
+            >
+              <div className="text-xs font-medium text-danger">{f.label}</div>
+              <div className="mt-0.5 font-mono text-xs break-words text-ink-dim">
+                {f.message}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // ================================================================= toasts
 
 export interface Toast {

@@ -96,6 +96,83 @@ export function useBusyMap() {
   return { busy, run };
 }
 
+export interface Selection {
+  readonly selected: ReadonlySet<string>;
+  readonly size: number;
+  has: (id: string) => boolean;
+  /**
+   * Toggle one row. Pass the ordered visible ids and `extend` (shift-click) to
+   * add everything between the last plain click and this one.
+   */
+  toggle: (id: string, ordered?: string[], extend?: boolean) => void;
+  setMany: (ids: string[], on: boolean) => void;
+  clear: () => void;
+}
+
+/**
+ * Row selection for the tables with bulk actions.
+ *
+ * `knownIds` is every id currently loaded, not the filtered rows: selections
+ * survive typing in the search box, but a container that has been removed —
+ * by Cleat or by anything else touching the daemon — drops out on the next
+ * poll rather than leaving a bulk action aimed at something that is gone.
+ */
+export function useSelection(knownIds: string[]): Selection {
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+  const anchor = useRef<string | null>(null);
+
+  useEffect(() => {
+    setSelected((prev) => {
+      if (prev.size === 0) return prev;
+      const live = new Set(knownIds);
+      const next = new Set([...prev].filter((id) => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [knownIds]);
+
+  const toggle = useCallback((id: string, ordered?: string[], extend = false) => {
+    const from = anchor.current;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (extend && ordered && from && from !== id) {
+        const a = ordered.indexOf(from);
+        const b = ordered.indexOf(id);
+        if (a >= 0 && b >= 0) {
+          for (const between of ordered.slice(Math.min(a, b), Math.max(a, b) + 1)) {
+            next.add(between);
+          }
+          return next;
+        }
+      }
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    if (!extend) anchor.current = id;
+  }, []);
+
+  const setMany = useCallback((ids: string[], on: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (on) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+    anchor.current = null;
+  }, []);
+
+  const clear = useCallback(() => {
+    setSelected(new Set());
+    anchor.current = null;
+  }, []);
+
+  const has = useCallback((id: string) => selected.has(id), [selected]);
+
+  return { selected, size: selected.size, has, toggle, setMany, clear };
+}
+
 /** Debounce a value, used for the search boxes. */
 export function useDebounced<T>(value: T, ms = 200): T {
   const [debounced, setDebounced] = useState(value);

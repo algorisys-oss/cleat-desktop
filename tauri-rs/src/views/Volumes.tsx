@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import * as api from "../api";
-import { useBusyMap, useDebounced, usePolled } from "../hooks";
+import { useBusyMap, useDebounced, usePolled, useSelection } from "../hooks";
 import type { Volume } from "../types";
 import {
+  BulkBar,
+  BulkResultDialog,
   Button,
   CodeBlock,
   ConfirmDialog,
@@ -11,13 +13,14 @@ import {
   Input,
   Modal,
   Panel,
+  SelectBox,
   Spinner,
   Table,
   Td,
   Th,
   useToast,
 } from "../ui";
-import { formatBytes } from "../util";
+import { formatBytes, runBulk, type BulkFailure } from "../util";
 
 export default function Volumes() {
   const volumes = usePolled<Volume[]>(() => api.listVolumes(), 8000);
@@ -30,6 +33,15 @@ export default function Volumes() {
   const [removing, setRemoving] = useState<Volume | null>(null);
   const [inspecting, setInspecting] = useState<Volume | null>(null);
   const [pruning, setPruning] = useState(false);
+  const [bulkRemoving, setBulkRemoving] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState<{ done: number; failures: BulkFailure[] } | null>(
+    null,
+  );
+
+  // Volumes are addressed by name, not by a separate id.
+  const knownIds = useMemo(() => (volumes.data ?? []).map((v) => v.name), [volumes.data]);
+  const selection = useSelection(knownIds);
 
   const rows = useMemo(() => {
     const list = volumes.data ?? [];
@@ -41,6 +53,35 @@ export default function Volumes() {
       : list;
     return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
   }, [volumes.data, search]);
+
+  const visibleIds = useMemo(() => rows.map((v) => v.name), [rows]);
+  const selectedRows = useMemo(
+    () => (volumes.data ?? []).filter((v) => selection.selected.has(v.name)),
+    [volumes.data, selection.selected],
+  );
+  const selectedSize = selectedRows.reduce(
+    (sum, v) => sum + (v.size !== null && v.size > 0 ? v.size : 0),
+    0,
+  );
+
+  const removeSelected = async () => {
+    setBulkBusy(true);
+    // Never forced: the daemon refusing to delete a volume a container still
+    // mounts is the last thing standing between a stray click and lost data.
+    const result = await runBulk(
+      selectedRows,
+      (v) => v.name,
+      (v) => api.removeVolume(v.name, false),
+    );
+    setBulkBusy(false);
+    volumes.reload();
+    if (result.failures.length === 0) {
+      toast.success(`${result.done} volume${result.done === 1 ? "" : "s"} removed`);
+      selection.clear();
+    } else {
+      setBulkResult(result);
+    }
+  };
 
   if (volumes.error && volumes.initial) {
     return <ErrorNote error={volumes.error} onRetry={volumes.reload} />;
@@ -70,6 +111,17 @@ export default function Volumes() {
         </div>
       </div>
 
+      {selection.size > 0 && (
+        <BulkBar count={selection.size} noun="volume" onClear={selection.clear}>
+          <Button size="sm" variant="danger" busy={bulkBusy} onClick={() => setBulkRemoving(true)}>
+            Remove {selection.size}
+          </Button>
+          {selectedSize > 0 && (
+            <span className="text-xs text-ink-faint">{formatBytes(selectedSize)}</span>
+          )}
+        </BulkBar>
+      )}
+
       <Panel className="min-h-0 flex-1 overflow-auto">
         {volumes.initial ? (
           <div className="flex justify-center py-16">
@@ -84,6 +136,19 @@ export default function Volumes() {
           <Table>
             <thead>
               <tr>
+                <Th className="w-8">
+                  <SelectBox
+                    label="Select all shown volumes"
+                    checked={rows.every((v) => selection.selected.has(v.name))}
+                    indeterminate={rows.some((v) => selection.selected.has(v.name))}
+                    onToggle={() =>
+                      selection.setMany(
+                        visibleIds,
+                        !rows.every((v) => selection.selected.has(v.name)),
+                      )
+                    }
+                  />
+                </Th>
                 <Th>Name</Th>
                 <Th>Driver</Th>
                 <Th>Mount point</Th>
@@ -93,7 +158,19 @@ export default function Volumes() {
             </thead>
             <tbody>
               {rows.map((v) => (
-                <tr key={v.name} className="hover:bg-surface-2/50">
+                <tr
+                  key={v.name}
+                  className={`hover:bg-surface-2/50 ${
+                    selection.selected.has(v.name) ? "bg-accent/8" : ""
+                  }`}
+                >
+                  <Td>
+                    <SelectBox
+                      label={`Select ${v.name}`}
+                      checked={selection.selected.has(v.name)}
+                      onToggle={(extend) => selection.toggle(v.name, visibleIds, extend)}
+                    />
+                  </Td>
                   <Td className="font-medium break-all text-ink">{v.name}</Td>
                   <Td className="text-ink-dim">{v.driver}</Td>
                   <Td
@@ -183,6 +260,45 @@ export default function Volumes() {
             <span className="text-danger">all data inside them</span>.
           </p>
         }
+      />
+
+      <ConfirmDialog
+        open={bulkRemoving}
+        title={`Remove ${selection.size} volume${selection.size === 1 ? "" : "s"}?`}
+        confirmLabel={`Remove ${selection.size}`}
+        onCancel={() => setBulkRemoving(false)}
+        onConfirm={() => {
+          setBulkRemoving(false);
+          void removeSelected();
+        }}
+        body={
+          <>
+            <p>
+              <span className="text-danger">
+                Data in {selection.size === 1 ? "this volume" : "these volumes"} is deleted
+                permanently
+              </span>
+              {selectedSize > 0 && ` (${formatBytes(selectedSize)})`}. Any that a container still
+              uses will be refused by the daemon and reported back.
+            </p>
+            <ul className="max-h-40 space-y-0.5 overflow-auto text-xs text-ink-faint">
+              {selectedRows.map((v) => (
+                <li key={v.name} className="truncate">
+                  {v.name}
+                </li>
+              ))}
+            </ul>
+          </>
+        }
+      />
+
+      <BulkResultDialog
+        open={!!bulkResult}
+        title="Some volumes were not removed"
+        done={bulkResult?.done ?? 0}
+        verb="removed"
+        failures={bulkResult?.failures ?? []}
+        onClose={() => setBulkResult(null)}
       />
     </div>
   );
