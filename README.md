@@ -33,7 +33,7 @@ Built with Rust + Tauri v2 and React/TypeScript. No Electron, no background HTTP
 
 **Networks** — list with subnets and *attached containers*, create (bridge / macvlan / ipvlan / overlay, internal), inspect, remove.
 
-**Volumes** — list with sizes, create, inspect, prune, remove.
+**Volumes** — list with sizes, create, inspect, prune, remove. Filters to just the anonymous ones containers created for themselves, which is the pile that actually accumulates.
 
 **Compose** — pick a project directory, bring stacks up and down, restart individual services, with live streaming output and a working Cancel button.
 

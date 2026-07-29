@@ -3,6 +3,7 @@ import * as api from "../api";
 import { useBusyMap, useDebounced, usePolled, useSelection } from "../hooks";
 import type { Volume } from "../types";
 import {
+  Badge,
   BulkBar,
   BulkResultDialog,
   Button,
@@ -13,6 +14,7 @@ import {
   Input,
   Modal,
   Panel,
+  Select,
   SelectBox,
   Spinner,
   Table,
@@ -20,7 +22,9 @@ import {
   Th,
   useToast,
 } from "../ui";
-import { formatBytes, runBulk, type BulkFailure } from "../util";
+import { formatBytes, isAnonymousVolume, runBulk, type BulkFailure } from "../util";
+
+type Scope = "all" | "named" | "anonymous";
 
 export default function Volumes() {
   const volumes = usePolled<Volume[]>(() => api.listVolumes(), 8000);
@@ -38,6 +42,7 @@ export default function Volumes() {
   const [bulkResult, setBulkResult] = useState<{ done: number; failures: BulkFailure[] } | null>(
     null,
   );
+  const [scope, setScope] = useState<Scope>("all");
 
   // Volumes are addressed by name, not by a separate id.
   const knownIds = useMemo(() => (volumes.data ?? []).map((v) => v.name), [volumes.data]);
@@ -46,13 +51,19 @@ export default function Volumes() {
   const rows = useMemo(() => {
     const list = volumes.data ?? [];
     const q = search.trim().toLowerCase();
-    const filtered = q
-      ? list.filter(
-          (v) => v.name.toLowerCase().includes(q) || v.mountpoint.toLowerCase().includes(q),
-        )
-      : list;
+    const filtered = list.filter((v) => {
+      if (scope === "anonymous" && !isAnonymousVolume(v.name)) return false;
+      if (scope === "named" && isAnonymousVolume(v.name)) return false;
+      if (!q) return true;
+      return v.name.toLowerCase().includes(q) || v.mountpoint.toLowerCase().includes(q);
+    });
     return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
-  }, [volumes.data, search]);
+  }, [volumes.data, search, scope]);
+
+  const anonymousCount = useMemo(
+    () => (volumes.data ?? []).filter((v) => isAnonymousVolume(v.name)).length,
+    [volumes.data],
+  );
 
   const visibleIds = useMemo(() => rows.map((v) => v.name), [rows]);
   const selectedRows = useMemo(
@@ -96,6 +107,16 @@ export default function Volumes() {
           onChange={(e) => setQuery(e.target.value)}
           className="w-72"
         />
+        <Select
+          value={scope}
+          onChange={(e) => setScope(e.target.value as Scope)}
+          className="text-xs"
+          title="Anonymous volumes are the ones a container created for itself"
+        >
+          <option value="all">All volumes</option>
+          <option value="named">Named only</option>
+          <option value="anonymous">Anonymous only ({anonymousCount})</option>
+        </Select>
         <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
           Create volume
         </Button>
@@ -129,8 +150,14 @@ export default function Volumes() {
           </div>
         ) : rows.length === 0 ? (
           <EmptyState
-            title={search ? "No volumes match that filter" : "No volumes"}
-            hint={search ? undefined : "Named volumes you create will appear here."}
+            title={
+              search || scope !== "all" ? "No volumes match that filter" : "No volumes"
+            }
+            hint={
+              search || scope !== "all"
+                ? undefined
+                : "Named volumes you create will appear here."
+            }
           />
         ) : (
           <Table>
@@ -171,7 +198,18 @@ export default function Volumes() {
                       onToggle={(extend) => selection.toggle(v.name, visibleIds, extend)}
                     />
                   </Td>
-                  <Td className="font-medium break-all text-ink">{v.name}</Td>
+                  <Td className="font-medium break-all text-ink" title={v.name}>
+                    {isAnonymousVolume(v.name) ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono text-xs text-ink-dim">
+                          {v.name.slice(0, 12)}…
+                        </span>
+                        <Badge tone="warn">anonymous</Badge>
+                      </div>
+                    ) : (
+                      v.name
+                    )}
+                  </Td>
                   <Td className="text-ink-dim">{v.driver}</Td>
                   <Td
                     className="max-w-80 truncate font-mono text-xs text-ink-faint"

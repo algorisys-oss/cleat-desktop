@@ -88,6 +88,19 @@ export function primaryTag(repoTags: string[]): string {
   return tagged ?? "<untagged>";
 }
 
+/**
+ * A volume the runtime named for you, not one anybody asked for.
+ *
+ * Both Docker and Podman name an anonymous volume with a bare 64-character
+ * hex digest — there is no flag on the object saying so, and the label set is
+ * empty for plenty of deliberately-created volumes too, so the name is the
+ * only signal that works on both runtimes. A user *could* name a volume that
+ * way by hand; nobody does.
+ */
+export function isAnonymousVolume(name: string): boolean {
+  return /^[0-9a-f]{64}$/.test(name);
+}
+
 /** Group the states Docker reports into the three the UI colours by. */
 export function stateTone(state: string): "ok" | "warn" | "danger" | "idle" {
   switch (state) {
