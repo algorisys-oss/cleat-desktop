@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as api from "./api";
+import { usePersisted } from "./hooks";
 import type { RuntimeInfo, RuntimeKind } from "./types";
 import { Badge, Button, Dot, Spinner, ToastProvider, useToast } from "./ui";
 import Containers from "./views/Containers";
@@ -39,6 +40,9 @@ export default function App() {
 
 function Shell() {
   const [view, setView] = useState<ViewId>("dashboard");
+  // Persisted rather than per-session: a sidebar that springs back open every
+  // launch is worse than one that never collapsed.
+  const [collapsed, setCollapsed] = usePersisted("cleat.sidebar.collapsed", false);
   const [runtimes, setRuntimes] = useState<RuntimeInfo[]>([]);
   const [active, setActive] = useState<RuntimeKind | null>(null);
   const [booting, setBooting] = useState(true);
@@ -129,10 +133,31 @@ function Shell() {
 
   return (
     <div className="flex h-full">
-      <aside className="no-select flex w-52 shrink-0 flex-col border-r border-edge bg-surface-1">
-        <div className="border-b border-edge px-4 py-3">
-          <div className="text-sm font-semibold text-ink">Cleat</div>
-          <div className="text-xs text-ink-faint">Docker · Podman</div>
+      <aside
+        className={`no-select flex shrink-0 flex-col border-r border-edge bg-surface-1 transition-[width] duration-150 ${
+          collapsed ? "w-[74px]" : "w-52"
+        }`}
+      >
+        <div
+          className={`flex items-center border-b border-edge py-3 ${
+            collapsed ? "justify-center px-2" : "justify-between px-4"
+          }`}
+        >
+          {!collapsed && (
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-ink">Cleat</div>
+              <div className="truncate text-xs text-ink-faint">Docker · Podman</div>
+            </div>
+          )}
+          <button
+            onClick={() => setCollapsed(!collapsed)}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!collapsed}
+            className="rounded p-1 text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink"
+          >
+            {collapsed ? "»" : "«"}
+          </button>
         </div>
 
         <nav className="flex-1 space-y-0.5 p-2">
@@ -140,14 +165,29 @@ function Shell() {
             <button
               key={item.id}
               onClick={() => setView(item.id)}
-              className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors ${
+              // The label is still rendered when collapsed, just small — an
+              // icon-only rail of geometric glyphs is unreadable without one.
+              // The tooltip carries it too, for the widths where it truncates.
+              title={item.label}
+              aria-current={view === item.id ? "page" : undefined}
+              className={`flex w-full rounded-md transition-colors ${
+                collapsed
+                  ? "flex-col items-center gap-1 px-1 py-2"
+                  : "items-center gap-2.5 px-3 py-2 text-left text-sm"
+              } ${
                 view === item.id
                   ? "bg-accent/15 font-medium text-accent"
                   : "text-ink-dim hover:bg-surface-2 hover:text-ink"
               }`}
             >
-              <span className="w-4 text-center opacity-70">{item.icon}</span>
-              {item.label}
+              <span
+                className={collapsed ? "text-base leading-none opacity-80" : "w-4 text-center opacity-70"}
+              >
+                {item.icon}
+              </span>
+              <span className={collapsed ? "w-full truncate text-center text-[10px] leading-none" : ""}>
+                {item.label}
+              </span>
             </button>
           ))}
         </nav>
@@ -157,11 +197,12 @@ function Shell() {
           hiddenCount={hiddenCount}
           active={active}
           switching={switching}
+          collapsed={collapsed}
           onSelect={switchTo}
           onRefresh={refreshRuntimes}
         />
 
-        <StatusBar />
+        <StatusBar collapsed={collapsed} />
       </aside>
 
       <main className="min-w-0 flex-1 overflow-hidden bg-surface-0">
@@ -198,14 +239,17 @@ function Shell() {
  * build-time define, so it always matches the bundle that was actually
  * produced — see `vite.config.ts`. `/shipit` bumps that file.
  */
-function StatusBar() {
+function StatusBar({ collapsed }: { collapsed: boolean }) {
   return (
-    <div className="flex items-center justify-between border-t border-edge px-3 py-1.5">
-      <span className="text-[10px] text-ink-faint">Cleat</span>
-      <span
-        className="font-mono text-[10px] text-ink-faint"
-        title={`Cleat ${__APP_VERSION__}`}
-      >
+    <div
+      className={`flex items-center border-t border-edge py-1.5 ${
+        collapsed ? "justify-center px-1" : "justify-between px-3"
+      }`}
+    >
+      {/* The name is the droppable half: it is on the window title and the
+          header already. The version is the point of this strip. */}
+      {!collapsed && <span className="text-[10px] text-ink-faint">Cleat</span>}
+      <span className="font-mono text-[10px] text-ink-faint" title={`Cleat ${__APP_VERSION__}`}>
         v{__APP_VERSION__}
       </span>
     </div>
@@ -217,6 +261,7 @@ function RuntimeSwitcher({
   hiddenCount,
   active,
   switching,
+  collapsed,
   onSelect,
   onRefresh,
 }: {
@@ -224,9 +269,62 @@ function RuntimeSwitcher({
   hiddenCount: number;
   active: RuntimeKind | null;
   switching: boolean;
+  collapsed: boolean;
   onSelect: (k: RuntimeKind) => void;
   onRefresh: () => void;
 }) {
+  /** Everything the expanded rows show, folded into one tooltip. */
+  const describe = (r: RuntimeInfo) =>
+    [
+      r.kind,
+      r.version ? `v${r.version}` : null,
+      r.available ? null : "unavailable",
+      r.detail,
+    ]
+      .filter(Boolean)
+      .join(" — ");
+
+  // Collapsed, the version numbers and the "Runtime" heading do not fit, and
+  // truncating a version to three characters would be worse than omitting it.
+  // What has to survive is which runtime is active and whether the other one
+  // can be switched to — a dot and a name carry both, and the tooltip carries
+  // the rest.
+  if (collapsed) {
+    return (
+      <div className="space-y-0.5 border-t border-edge p-1.5">
+        {runtimes.map((r) => (
+          <button
+            key={r.kind}
+            disabled={!r.available || switching}
+            onClick={() => onSelect(r.kind)}
+            title={describe(r)}
+            aria-label={describe(r)}
+            aria-current={active === r.kind ? "true" : undefined}
+            className={`flex w-full flex-col items-center gap-0.5 rounded px-1 py-1.5 transition-colors disabled:cursor-not-allowed ${
+              active === r.kind
+                ? "bg-surface-3 text-ink"
+                : r.available
+                  ? "text-ink-dim hover:bg-surface-2"
+                  : "text-ink-faint opacity-60"
+            }`}
+          >
+            {switching && active !== r.kind && r.available ? (
+              <Spinner size={10} />
+            ) : (
+              <Dot tone={r.available ? (active === r.kind ? "ok" : "idle") : "danger"} />
+            )}
+            <span className="w-full truncate text-center text-[10px] capitalize leading-none">
+              {r.kind}
+            </span>
+          </button>
+        ))}
+        {runtimes.length === 0 && (
+          <div className="py-1 text-center text-[10px] text-ink-faint">…</div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="border-t border-edge p-2">
       <div className="flex items-center justify-between px-1 pb-1">
