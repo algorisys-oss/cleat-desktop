@@ -1,6 +1,6 @@
 [package]
 name = "cleat"
-version = "0.1.3"
+version = "0.2.0"
 description = "Container management for Docker and Podman"
 authors = ["Rajesh Pillai"]
 edition = "2021"
