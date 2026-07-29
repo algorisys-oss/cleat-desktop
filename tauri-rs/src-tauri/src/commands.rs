@@ -1034,3 +1034,482 @@ pub async fn clear_activity_log(state: State<'_, AppState>) -> AppResult<()> {
     state.activity().clear();
     Ok(())
 }
+
+// ============================================================== kubernetes
+
+use crate::k8s;
+use crate::k8s::generate;
+use crate::k8s::manifests::ManifestOutcome;
+use crate::k8s::model as k8s_model;
+use crate::k8s::resources;
+
+/// Contexts in the kubeconfig. Reads the file only; contacts no cluster.
+#[tauri::command]
+pub async fn k8s_contexts() -> AppResult<Vec<k8s_model::KubeContext>> {
+    k8s::contexts()
+}
+
+/// Contact every context's cluster, concurrently, and report what answered.
+#[tauri::command]
+pub async fn k8s_probe_clusters() -> AppResult<Vec<k8s_model::ClusterInfo>> {
+    k8s::probe_all().await
+}
+
+#[tauri::command]
+pub async fn k8s_current_context(state: State<'_, AppState>) -> AppResult<Option<String>> {
+    Ok(state.kube_context().await)
+}
+
+/// Choose a context. `None` falls back to whatever the kubeconfig marks current.
+#[tauri::command]
+pub async fn k8s_select_context(
+    state: State<'_, AppState>,
+    context: Option<String>,
+) -> AppResult<()> {
+    state.select_kube_context(context).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn k8s_list_namespaces(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<k8s_model::Namespace>> {
+    resources::list_namespaces(state.kube_client().await?).await
+}
+
+#[tauri::command]
+pub async fn k8s_list_pods(
+    state: State<'_, AppState>,
+    namespace: Option<String>,
+) -> AppResult<Vec<k8s_model::Pod>> {
+    resources::list_pods(state.kube_client().await?, namespace.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn k8s_list_deployments(
+    state: State<'_, AppState>,
+    namespace: Option<String>,
+) -> AppResult<Vec<k8s_model::Deployment>> {
+    resources::list_deployments(state.kube_client().await?, namespace.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn k8s_list_services(
+    state: State<'_, AppState>,
+    namespace: Option<String>,
+) -> AppResult<Vec<k8s_model::Service>> {
+    resources::list_services(state.kube_client().await?, namespace.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn k8s_list_nodes(state: State<'_, AppState>) -> AppResult<Vec<k8s_model::Node>> {
+    resources::list_nodes(state.kube_client().await?).await
+}
+
+#[tauri::command]
+pub async fn k8s_inspect_pod(
+    state: State<'_, AppState>,
+    namespace: String,
+    name: String,
+) -> AppResult<serde_json::Value> {
+    resources::inspect_pod(state.kube_client().await?, &namespace, &name).await
+}
+
+/// Delete a pod. Its controller recreates it, which is how a workload is
+/// restarted — there is no "restart pod" verb in the API.
+#[tauri::command]
+pub async fn k8s_delete_pod(
+    state: State<'_, AppState>,
+    namespace: String,
+    name: String,
+) -> AppResult<()> {
+    resources::delete_pod(state.kube_client().await?, &namespace, &name).await
+}
+
+#[tauri::command]
+pub async fn k8s_pod_logs(
+    state: State<'_, AppState>,
+    namespace: String,
+    name: String,
+    container: Option<String>,
+    tail: i64,
+) -> AppResult<String> {
+    resources::pod_logs(
+        state.kube_client().await?,
+        &namespace,
+        &name,
+        container.as_deref(),
+        tail,
+    )
+    .await
+}
+
+/// Follow a pod's logs onto `channel`.
+///
+/// Same registration as the container path, so the same Stop button works and a
+/// closed window drops the task. Keyed by namespace and name because pod names
+/// are only unique within a namespace.
+#[tauri::command]
+pub async fn k8s_follow_pod_logs(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    namespace: String,
+    name: String,
+    container: Option<String>,
+    tail: i64,
+    channel: String,
+) -> AppResult<()> {
+    let client = state.kube_client().await?;
+    let mut stream =
+        resources::follow_pod_logs(client, &namespace, &name, container.as_deref(), tail).await?;
+
+    let key = format!("k8s-logs:{namespace}/{name}");
+    let handle = tokio::spawn(async move {
+        let mut failure: Option<String> = None;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(line) => {
+                    if app.emit(&channel, line).is_err() {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    failure = Some(e.message());
+                    break;
+                }
+            }
+        }
+        emit_end(&app, &channel, failure);
+    });
+
+    state.register_stream(key, handle).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn k8s_stop_pod_logs(
+    state: State<'_, AppState>,
+    namespace: String,
+    name: String,
+) -> AppResult<bool> {
+    Ok(state
+        .stop_stream(&format!("k8s-logs:{namespace}/{name}"))
+        .await)
+}
+
+/// Apply a manifest, or find out what applying it would do.
+///
+/// `dry_run` is a server-side dry run: the API server runs validation, admission
+/// webhooks and defaulting, then discards the result. The UI calls this first
+/// and shows the outcomes before asking, so applying pasted YAML is a decision
+/// rather than a gamble.
+#[tauri::command]
+pub async fn k8s_apply_manifest(
+    state: State<'_, AppState>,
+    yaml: String,
+    namespace: Option<String>,
+    dry_run: bool,
+) -> AppResult<Vec<ManifestOutcome>> {
+    k8s::manifests::apply(
+        state.kube_client().await?,
+        &yaml,
+        namespace.as_deref(),
+        dry_run,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn k8s_delete_manifest(
+    state: State<'_, AppState>,
+    yaml: String,
+    namespace: Option<String>,
+) -> AppResult<Vec<ManifestOutcome>> {
+    k8s::manifests::delete(state.kube_client().await?, &yaml, namespace.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn k8s_ensure_namespace(state: State<'_, AppState>, name: String) -> AppResult<()> {
+    k8s::manifests::ensure_namespace(state.kube_client().await?, &name).await
+}
+
+/// Generate a Deployment (and Service) from a running container.
+///
+/// Reads the container through the active runtime, so it works identically for
+/// Docker and Podman, and returns YAML plus the warnings describing what the
+/// translation could not carry across. Nothing is applied here.
+#[tauri::command]
+pub async fn k8s_generate_from_container(
+    state: State<'_, AppState>,
+    id: String,
+    namespace: Option<String>,
+    replicas: i32,
+    include_service: bool,
+) -> AppResult<generate::Generated> {
+    let inspect = state.runtime().await?.inspect_container(&id).await?;
+    generate::from_inspect(
+        &inspect,
+        &generate::Options {
+            namespace,
+            replicas,
+            include_service,
+        },
+    )
+}
+
+/// Generate manifests for every container in a compose project.
+///
+/// One document set per container, concatenated. Compose services are already
+/// separate workloads, so this is a Deployment each rather than one pod with
+/// several containers — which is what `podman generate kube` does and what makes
+/// its output hard to scale afterwards.
+#[tauri::command]
+pub async fn k8s_generate_from_compose(
+    state: State<'_, AppState>,
+    project: String,
+    namespace: Option<String>,
+    replicas: i32,
+    include_service: bool,
+) -> AppResult<generate::Generated> {
+    let runtime = state.runtime().await?;
+    let containers = runtime.list_containers(true).await?;
+    let members: Vec<_> = containers
+        .into_iter()
+        .filter(|c| c.compose_project.as_deref() == Some(project.as_str()))
+        .collect();
+
+    if members.is_empty() {
+        return Err(AppError::NotFound(format!(
+            "no containers belong to compose project {project:?}"
+        )));
+    }
+
+    let mut yaml = String::new();
+    let mut warnings = Vec::new();
+    for container in members {
+        let inspect = runtime.inspect_container(&container.id).await?;
+        let generated = generate::from_inspect(
+            &inspect,
+            &generate::Options {
+                namespace: namespace.clone(),
+                replicas,
+                include_service,
+            },
+        )?;
+        if !yaml.is_empty() {
+            yaml.push_str("---\n");
+        }
+        yaml.push_str(&generated.yaml);
+        warnings.extend(generated.warnings);
+    }
+
+    Ok(generate::Generated { yaml, warnings })
+}
+
+/// Recent cluster events, newest first.
+///
+/// The answer to "why is this pod Pending", which the pod object itself does
+/// not carry.
+#[tauri::command]
+pub async fn k8s_list_events(
+    state: State<'_, AppState>,
+    namespace: Option<String>,
+) -> AppResult<Vec<k8s_model::Event>> {
+    resources::list_events(state.kube_client().await?, namespace.as_deref()).await
+}
+
+/// ConfigMaps and Secrets together, since they are read as one thing.
+///
+/// Secret *values* are never fetched — only which keys exist. See
+/// `resources::list_secrets`.
+#[tauri::command]
+pub async fn k8s_list_config(
+    state: State<'_, AppState>,
+    namespace: Option<String>,
+) -> AppResult<Vec<k8s_model::ConfigEntry>> {
+    let client = state.kube_client().await?;
+    let (maps, secrets) = tokio::join!(
+        resources::list_configmaps(client.clone(), namespace.as_deref()),
+        resources::list_secrets(client, namespace.as_deref())
+    );
+    let mut all = maps?;
+    all.extend(secrets?);
+    all.sort_by(|a, b| a.namespace.cmp(&b.namespace).then(a.name.cmp(&b.name)));
+    Ok(all)
+}
+
+#[tauri::command]
+pub async fn k8s_scale_deployment(
+    state: State<'_, AppState>,
+    namespace: String,
+    name: String,
+    replicas: i32,
+) -> AppResult<()> {
+    resources::scale_deployment(state.kube_client().await?, &namespace, &name, replicas).await
+}
+
+#[tauri::command]
+pub async fn k8s_restart_deployment(
+    state: State<'_, AppState>,
+    namespace: String,
+    name: String,
+) -> AppResult<()> {
+    resources::restart_deployment(state.kube_client().await?, &namespace, &name).await
+}
+
+/// Open a shell inside a pod.
+///
+/// The cluster twin of [`exec_start`], and it reuses the same registries — the
+/// stdin writer goes in `execs`, the output pump in `streams` — so the existing
+/// teardown paths cover it. The resize channel is the one addition, because a
+/// pod resize travels on the session's own socket rather than as its own call.
+// Nine parameters because this is an IPC boundary, not a function anyone
+// calls: every one is a distinct thing the frontend must name, and bundling
+// them into a struct would only move the list into types.ts.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn k8s_exec_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    namespace: String,
+    pod: String,
+    container: Option<String>,
+    argv: Vec<String>,
+    cols: u16,
+    rows: u16,
+    channel: String,
+) -> AppResult<()> {
+    let client = state.kube_client().await?;
+    let session = k8s::exec::attach(
+        client,
+        &namespace,
+        &pod,
+        container.as_deref(),
+        argv,
+        cols,
+        rows,
+    )
+    .await?;
+
+    let k8s::exec::PodExec {
+        mut output,
+        stdin,
+        resize,
+    } = session;
+
+    // Registered before the pump starts, for the same reason the container path
+    // does it: a shell that exits immediately would otherwise emit its end
+    // frame while the frontend still has no session to tear down.
+    state
+        .register_exec(channel.clone(), format!("pod:{namespace}/{pod}"), stdin)
+        .await;
+    if let Some(tx) = resize {
+        state.register_kube_resizer(channel.clone(), tx).await;
+    }
+
+    let pump_channel = channel.clone();
+    let handle = tokio::spawn(async move {
+        while let Some(item) = output.next().await {
+            match item {
+                Ok(bytes) => {
+                    if app.emit(&pump_channel, b64(&bytes)).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    emit_end(&app, &pump_channel, Some(e.message()));
+                    return;
+                }
+            }
+        }
+        emit_end(&app, &pump_channel, None);
+    });
+
+    state
+        .register_stream(format!("exec:{channel}"), handle)
+        .await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn k8s_exec_resize(
+    state: State<'_, AppState>,
+    channel: String,
+    cols: u16,
+    rows: u16,
+) -> AppResult<bool> {
+    Ok(state.resize_kube_exec(&channel, cols, rows).await)
+}
+
+#[tauri::command]
+pub async fn k8s_exec_stop(state: State<'_, AppState>, channel: String) -> AppResult<bool> {
+    state.drop_kube_resizer(&channel).await;
+    // `stop_exec` clears both the session and its output task, which is the
+    // same teardown the container terminal uses.
+    Ok(state.stop_exec(&channel).await)
+}
+
+/// Forward a local port to a port on a pod.
+///
+/// Returns the port actually bound, which is what the caller needs when it
+/// asks for 0 and lets the OS choose. Loopback only — see `k8s::exec`.
+#[tauri::command]
+pub async fn k8s_port_forward(
+    state: State<'_, AppState>,
+    namespace: String,
+    pod: String,
+    pod_port: u16,
+    local_port: u16,
+) -> AppResult<u16> {
+    let client = state.kube_client().await?;
+    let (bound, handle) =
+        k8s::exec::port_forward(client, &namespace, &pod, pod_port, local_port).await?;
+    state
+        .register_stream(format!("k8s-forward:{namespace}/{pod}/{pod_port}"), handle)
+        .await;
+    Ok(bound)
+}
+
+#[tauri::command]
+pub async fn k8s_stop_port_forward(
+    state: State<'_, AppState>,
+    namespace: String,
+    pod: String,
+    pod_port: u16,
+) -> AppResult<bool> {
+    Ok(state
+        .stop_stream(&format!("k8s-forward:{namespace}/{pod}/{pod_port}"))
+        .await)
+}
+
+/// A live resource as YAML, for editing.
+///
+/// Server-managed noise is stripped — `managedFields`, `resourceVersion`, `uid`,
+/// `creationTimestamp`, `status` — because the point is a document a person can
+/// read and change, and those fields are neither. What remains is what
+/// `kubectl edit` would show you.
+#[tauri::command]
+pub async fn k8s_resource_yaml(
+    state: State<'_, AppState>,
+    api_version: String,
+    kind: String,
+    namespace: Option<String>,
+    name: String,
+) -> AppResult<String> {
+    k8s::manifests::fetch_yaml(
+        state.kube_client().await?,
+        &api_version,
+        &kind,
+        namespace.as_deref(),
+        &name,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn k8s_list_workloads(
+    state: State<'_, AppState>,
+    namespace: Option<String>,
+) -> AppResult<Vec<k8s_model::Workload>> {
+    resources::list_workloads(state.kube_client().await?, namespace.as_deref()).await
+}

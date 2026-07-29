@@ -33,6 +33,7 @@ import {
   stateTone,
   type BulkFailure,
 } from "../util";
+import { DeployToClusterModal } from "./Kubernetes";
 import ExecTerminal from "./ExecTerminal";
 import RunImage from "./RunImage";
 
@@ -52,6 +53,7 @@ export default function Containers() {
   const [servicesFor, setServicesFor] = useState<Container | null>(null);
   const [removing, setRemoving] = useState<Container | null>(null);
   const [removeVolumes, setRemoveVolumes] = useState(false);
+  const [deployFor, setDeployFor] = useState<Container | null>(null);
   const [bulkRemoving, setBulkRemoving] = useState(false);
   const [bulkVerb, setBulkVerb] = useState<string | null>(null);
   const [bulkResult, setBulkResult] = useState<{
@@ -403,6 +405,14 @@ export default function Containers() {
                         </Button>
                         <Button
                           size="sm"
+                          variant="ghost"
+                          onClick={() => setDeployFor(c)}
+                          title="Generate Kubernetes manifests from this container"
+                        >
+                          Deploy
+                        </Button>
+                        <Button
+                          size="sm"
                           variant="danger"
                           onClick={() => {
                             setRemoveVolumes(false);
@@ -420,6 +430,25 @@ export default function Containers() {
           </Table>
         )}
       </Panel>
+
+      {deployFor && (
+        <DeployToClusterModal
+          title={
+            deployFor.composeProject
+              ? `Deploy ${deployFor.composeProject} to Kubernetes`
+              : `Deploy ${deployFor.name} to Kubernetes`
+          }
+          generate={() =>
+            // A compose member deploys as its whole project: the services were
+            // written to run together, and shipping one of them to a cluster
+            // alone reproduces half a system.
+            deployFor.composeProject
+              ? api.k8sGenerateFromCompose(deployFor.composeProject, null, 1, true)
+              : api.k8sGenerateFromContainer(deployFor.id, null, 1, true)
+          }
+          onClose={() => setDeployFor(null)}
+        />
+      )}
 
       {logsFor && <LogsModal container={logsFor} onClose={() => setLogsFor(null)} />}
       {execFor && <ExecTerminal container={execFor} onClose={() => setExecFor(null)} />}

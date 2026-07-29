@@ -250,5 +250,21 @@ disk.
   neither can make the OS prompt for a keychain password. The cost is that a
   helper-backed registry shows no username — Cleat knows the credential is there
   without having read it.
+- **Kubernetes credentials are read, never stored** — the same rule as registry
+  logins. `kube` reads the kubeconfig `kubectl` already uses. That includes
+  `exec` credential plugins, which are subprocesses this app then runs: a
+  kubeconfig is executable configuration, so a hostile one is a hostile program.
+  Cleat inherits `kubectl`'s trust model here and does not attempt to sandbox
+  it — if you would not run `kubectl` against that kubeconfig, do not point
+  Cleat at it either.
+- **Applying a manifest is unbounded by design**, so it is gated rather than
+  restricted: every apply runs a server-side dry-run first, and the Apply
+  control stays disabled until that returns clean. Cleat holds no cluster
+  permission of its own — everything is done as the context's user, so it can
+  never do more than `kubectl` could from the same machine.
+- **Generated manifests carry secrets in plain text.** A Deployment without its
+  environment does not run, so generation keeps the values and warns instead of
+  redacting. The warning names the offending keys; moving them to a Secret is
+  the reader's call.
 - **No formal audit** has been performed. The claims above describe specific
   defects fixed and specific tests that pin them.

@@ -342,6 +342,82 @@ pub mod suite {
         }
     }
 
+    /// Manifest generation against real inspect output.
+    ///
+    /// The unit tests for this feed it hand-written JSON, which proves the
+    /// logic and nothing about the shape. Docker and Podman each report
+    /// inspect slightly differently — Podman qualifies image names, the two
+    /// disagree on which keys are present when empty — so this runs the real
+    /// thing through and requires the result to parse as YAML.
+    pub async fn generate_kubernetes_manifest(rt: &dyn ContainerRuntime, names: &Names) {
+        use cleat_lib::k8s::generate;
+
+        // Its own name, not `names.container`: the suite runs concurrently
+        // against one daemon and `container_lifecycle` already owns that one,
+        // so sharing it is a 409 whenever the two overlap.
+        let name = format!("{}-k8sgen", names.container);
+
+        let Some(image) = super::ensure_image(rt).await else {
+            eprintln!("skipping generate: no image available");
+            return;
+        };
+
+        let id = rt
+            .create_container(cleat_lib::model::CreateContainerRequest {
+                image,
+                name: Some(name.clone()),
+                env: vec!["APP_MODE=production".into(), "DB_PASSWORD=hunter2".into()],
+                ports: vec![],
+                volumes: vec![],
+                network: None,
+                command: vec!["sh".into(), "-c".into(), "sleep 300".into()],
+                auto_remove: false,
+                restart_policy: None,
+            })
+            .await
+            .expect("create container");
+
+        let generated = async {
+            let inspect = rt.inspect_container(&id).await.expect("inspect");
+            generate::from_inspect(&inspect, &generate::Options::default()).expect("generate")
+        }
+        .await;
+
+        // Always clean up, including when an assertion below would panic.
+        let cleanup = rt.remove_container(&id, true, false).await;
+
+        assert!(
+            generated.yaml.contains("kind: Deployment"),
+            "no Deployment in:\n{}",
+            generated.yaml
+        );
+        // The name came from the daemon, so this exercises the RFC 1123
+        // rewrite against a real container name rather than a fixture.
+        assert!(
+            generated.yaml.contains(&format!(
+                "name: {}",
+                generate::sanitize_name(&names.container)
+            )),
+            "expected the sanitized container name in:\n{}",
+            generated.yaml
+        );
+
+        let docs: Vec<serde_yaml::Value> = serde_yaml::Deserializer::from_str(&generated.yaml)
+            .map(|d| serde::Deserialize::deserialize(d).expect("each document parses"))
+            .collect();
+        assert!(!docs.is_empty(), "generated nothing parseable");
+
+        // A password in the environment must raise the warning, or the feature
+        // silently writes secrets into files people commit.
+        assert!(
+            generated.warnings.iter().any(|w| w.kind == "secret-in-env"),
+            "no secret warning for DB_PASSWORD: {:?}",
+            generated.warnings
+        );
+
+        cleanup.expect("remove container");
+    }
+
     pub async fn list_networks(rt: &dyn ContainerRuntime) {
         let networks = rt.list_networks().await.expect("list networks");
         assert!(

@@ -4,6 +4,7 @@ mod state;
 // Public so the integration tests in tests/ can drive a real runtime.
 pub mod error;
 pub mod model;
+pub mod k8s;
 pub mod runtime;
 
 use state::AppState;
@@ -96,6 +97,37 @@ pub fn run() {
             commands::copy_image,
             commands::stop_copy_image,
             commands::stop_all_streams,
+            // kubernetes
+            commands::k8s_contexts,
+            commands::k8s_probe_clusters,
+            commands::k8s_current_context,
+            commands::k8s_select_context,
+            commands::k8s_list_namespaces,
+            commands::k8s_list_pods,
+            commands::k8s_list_deployments,
+            commands::k8s_list_services,
+            commands::k8s_list_nodes,
+            commands::k8s_inspect_pod,
+            commands::k8s_delete_pod,
+            commands::k8s_pod_logs,
+            commands::k8s_follow_pod_logs,
+            commands::k8s_stop_pod_logs,
+            commands::k8s_apply_manifest,
+            commands::k8s_delete_manifest,
+            commands::k8s_ensure_namespace,
+            commands::k8s_generate_from_container,
+            commands::k8s_generate_from_compose,
+            commands::k8s_list_events,
+            commands::k8s_list_config,
+            commands::k8s_scale_deployment,
+            commands::k8s_restart_deployment,
+            commands::k8s_exec_start,
+            commands::k8s_exec_resize,
+            commands::k8s_exec_stop,
+            commands::k8s_port_forward,
+            commands::k8s_stop_port_forward,
+            commands::k8s_resource_yaml,
+            commands::k8s_list_workloads,
             // activity
             commands::activity_log,
             commands::clear_activity_log,

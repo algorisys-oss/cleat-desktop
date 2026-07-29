@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Cleat",
+        "title": "Cleat Cockpit",
         "width": 1280,
         "height": 820,
         "minWidth": 900,

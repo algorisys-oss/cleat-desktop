@@ -61,6 +61,23 @@ pub struct AppState {
     /// Every operation performed, for the activity panel. Outlives runtime
     /// switches on purpose — "what did I just do" spans them.
     activity: Arc<ActivityLog>,
+    /// Resize channels for live pod exec sessions, keyed like `execs`.
+    ///
+    /// Separate from `ExecSession` because the two runtimes resize differently:
+    /// a container resize is an HTTP call addressed by exec id, while a pod
+    /// resize is a message on the session's own WebSocket, so the sender has to
+    /// outlive the call that created it.
+    kube_resizers: RwLock<
+        HashMap<String, tokio::sync::Mutex<futures_channel::mpsc::Sender<kube::api::TerminalSize>>>,
+    >,
+    /// Selected kubeconfig context, when the user has chosen one.
+    ///
+    /// A name rather than a client: clients are built per call because their
+    /// credentials may come from an exec plugin with a short expiry, so a
+    /// cached one works until the token quietly dies. See [`crate::k8s::client`].
+    /// `None` means "whatever the kubeconfig says is current", which is what
+    /// `kubectl` would do.
+    kube_context: RwLock<Option<String>>,
 }
 
 impl AppState {
@@ -79,6 +96,57 @@ impl AppState {
 
     pub async fn current_kind(&self) -> Option<RuntimeKind> {
         self.runtime.read().await.as_ref().map(|r| r.kind())
+    }
+
+    /// The chosen kubeconfig context, if any.
+    pub async fn kube_context(&self) -> Option<String> {
+        self.kube_context.read().await.clone()
+    }
+
+    /// Choose a context. Not validated here — [`crate::k8s::probe`] is how the
+    /// UI finds out whether a cluster answers, and selecting an unreachable one
+    /// has to stay possible so its error can be shown in place.
+    pub async fn select_kube_context(&self, context: Option<String>) {
+        *self.kube_context.write().await = context;
+    }
+
+    /// Park a pod exec's resize channel for the life of the session.
+    pub async fn register_kube_resizer(
+        &self,
+        key: String,
+        tx: futures_channel::mpsc::Sender<kube::api::TerminalSize>,
+    ) {
+        self.kube_resizers
+            .write()
+            .await
+            .insert(key, tokio::sync::Mutex::new(tx));
+    }
+
+    /// Resize a live pod exec. Silent when the session is gone: a resize racing
+    /// a closed terminal is ordinary, not an error worth surfacing.
+    pub async fn resize_kube_exec(&self, key: &str, cols: u16, rows: u16) -> bool {
+        use futures_util::SinkExt as _;
+        let guard = self.kube_resizers.read().await;
+        let Some(tx) = guard.get(key) else {
+            return false;
+        };
+        let mut tx = tx.lock().await;
+        tx.send(kube::api::TerminalSize {
+            width: cols,
+            height: rows,
+        })
+        .await
+        .is_ok()
+    }
+
+    pub async fn drop_kube_resizer(&self, key: &str) {
+        self.kube_resizers.write().await.remove(key);
+    }
+
+    /// A client for the selected context.
+    pub async fn kube_client(&self) -> AppResult<kube::Client> {
+        let context = self.kube_context().await;
+        crate::k8s::client(context.as_deref()).await
     }
 
     /// Switch runtimes. The new one is connected and pinged *before* the old

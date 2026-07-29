@@ -15,6 +15,18 @@ import type {
   ImageTransferProgress,
   LogLine,
   Network,
+  ClusterInfo,
+  GeneratedManifest,
+  K8sConfigEntry,
+  K8sDeployment,
+  K8sEvent,
+  K8sNamespace,
+  K8sNode,
+  K8sPod,
+  K8sService,
+  K8sWorkload,
+  KubeContext,
+  ManifestOutcome,
   PullProgress,
   RegistryLogin,
   RuntimeInfo,
@@ -361,3 +373,176 @@ export const onRuntimeReady = (cb: (kind: RuntimeKind | null) => void) =>
 /** Everything Cleat has asked a runtime to do this session, newest first. */
 export const activityLog = () => invoke<ActivityEntry[]>("activity_log");
 export const clearActivityLog = () => invoke<void>("clear_activity_log");
+
+// -------------------------------------------------------------- kubernetes
+
+export const k8sContexts = () => invoke<KubeContext[]>("k8s_contexts");
+export const k8sProbeClusters = () => invoke<ClusterInfo[]>("k8s_probe_clusters");
+export const k8sCurrentContext = () => invoke<string | null>("k8s_current_context");
+export const k8sSelectContext = (context: string | null) =>
+  invoke<void>("k8s_select_context", { context });
+
+/** `namespace: null` means every namespace, matching `kubectl -A`. */
+export const k8sListNamespaces = () => invoke<K8sNamespace[]>("k8s_list_namespaces");
+export const k8sListPods = (namespace: string | null) =>
+  invoke<K8sPod[]>("k8s_list_pods", { namespace });
+export const k8sListDeployments = (namespace: string | null) =>
+  invoke<K8sDeployment[]>("k8s_list_deployments", { namespace });
+export const k8sListServices = (namespace: string | null) =>
+  invoke<K8sService[]>("k8s_list_services", { namespace });
+export const k8sListNodes = () => invoke<K8sNode[]>("k8s_list_nodes");
+
+export const k8sInspectPod = (namespace: string, name: string) =>
+  invoke<unknown>("k8s_inspect_pod", { namespace, name });
+export const k8sDeletePod = (namespace: string, name: string) =>
+  invoke<void>("k8s_delete_pod", { namespace, name });
+export const k8sPodLogs = (
+  namespace: string,
+  name: string,
+  container: string | null,
+  tail = 500,
+) => invoke<string>("k8s_pod_logs", { namespace, name, container, tail });
+
+/**
+ * Follow a pod's logs. One line per event — unlike container logs there is no
+ * stdout/stderr split, because the API server merges them and does not say
+ * which was which.
+ */
+export function subscribePodLogs(
+  namespace: string,
+  name: string,
+  container: string | null,
+  onLine: (line: string) => void,
+  options: { tail?: number; onEnd?: (error: string | null) => void } = {},
+) {
+  return openStream<string>(
+    "k8s-logs",
+    (channel) =>
+      invoke<void>("k8s_follow_pod_logs", {
+        namespace,
+        name,
+        container,
+        tail: options.tail ?? 500,
+        channel,
+      }),
+    () => invoke<boolean>("k8s_stop_pod_logs", { namespace, name }),
+    onLine,
+    options.onEnd,
+  );
+}
+
+/** `dryRun` runs the full admission chain server-side and persists nothing. */
+export const k8sApplyManifest = (yaml: string, namespace: string | null, dryRun: boolean) =>
+  invoke<ManifestOutcome[]>("k8s_apply_manifest", { yaml, namespace, dryRun });
+export const k8sDeleteManifest = (yaml: string, namespace: string | null) =>
+  invoke<ManifestOutcome[]>("k8s_delete_manifest", { yaml, namespace });
+export const k8sEnsureNamespace = (name: string) =>
+  invoke<void>("k8s_ensure_namespace", { name });
+
+export const k8sGenerateFromContainer = (
+  id: string,
+  namespace: string | null,
+  replicas: number,
+  includeService: boolean,
+) =>
+  invoke<GeneratedManifest>("k8s_generate_from_container", {
+    id,
+    namespace,
+    replicas,
+    includeService,
+  });
+export const k8sGenerateFromCompose = (
+  project: string,
+  namespace: string | null,
+  replicas: number,
+  includeService: boolean,
+) =>
+  invoke<GeneratedManifest>("k8s_generate_from_compose", {
+    project,
+    namespace,
+    replicas,
+    includeService,
+  });
+
+export const k8sListEvents = (namespace: string | null) =>
+  invoke<K8sEvent[]>("k8s_list_events", { namespace });
+export const k8sListConfig = (namespace: string | null) =>
+  invoke<K8sConfigEntry[]>("k8s_list_config", { namespace });
+export const k8sScaleDeployment = (namespace: string, name: string, replicas: number) =>
+  invoke<void>("k8s_scale_deployment", { namespace, name, replicas });
+export const k8sRestartDeployment = (namespace: string, name: string) =>
+  invoke<void>("k8s_restart_deployment", { namespace, name });
+
+export const k8sListWorkloads = (namespace: string | null) =>
+  invoke<K8sWorkload[]>("k8s_list_workloads", { namespace });
+
+/** A live resource as editable YAML, with server-managed fields stripped. */
+export const k8sResourceYaml = (
+  apiVersion: string,
+  kind: string,
+  namespace: string | null,
+  name: string,
+) => invoke<string>("k8s_resource_yaml", { apiVersion, kind, namespace, name });
+
+/** Forward a local port to a pod port. Returns the port actually bound. */
+export const k8sPortForward = (
+  namespace: string,
+  pod: string,
+  podPort: number,
+  localPort: number,
+) => invoke<number>("k8s_port_forward", { namespace, pod, podPort, localPort });
+export const k8sStopPortForward = (namespace: string, pod: string, podPort: number) =>
+  invoke<boolean>("k8s_stop_port_forward", { namespace, pod, podPort });
+
+/**
+ * Open a shell in a pod.
+ *
+ * Bidirectional, so unlike the one-way helpers this returns the channel as well
+ * as the disposer — writes and resizes have to address the same session.
+ */
+export async function openPodTerminal(
+  namespace: string,
+  pod: string,
+  container: string | null,
+  size: { cols: number; rows: number },
+  onData: (base64: string) => void,
+  onEnd?: (error: string | null) => void,
+): Promise<{ channel: string; dispose: () => void }> {
+  const channel = nextChannel("k8s-exec");
+  const unlisteners: UnlistenFn[] = [];
+  unlisteners.push(await listen<string>(channel, (e) => onData(e.payload)));
+  unlisteners.push(
+    await listen<StreamEnd>(`${channel}:end`, (e) => onEnd?.(e.payload.error)),
+  );
+
+  try {
+    await invoke<void>("k8s_exec_start", {
+      namespace,
+      pod,
+      container,
+      argv: [],
+      cols: size.cols,
+      rows: size.rows,
+      channel,
+    });
+  } catch (err) {
+    unlisteners.forEach((u) => u());
+    throw err;
+  }
+
+  let disposed = false;
+  return {
+    channel,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      unlisteners.forEach((u) => u());
+      void invoke("k8s_exec_stop", { channel }).catch(() => {});
+    },
+  };
+}
+
+export const podTerminalWrite = (channel: string, data: string) =>
+  invoke<void>("exec_write", { session: channel, data });
+export const podTerminalResize = (channel: string, cols: number, rows: number) =>
+  invoke<boolean>("k8s_exec_resize", { channel, cols, rows });

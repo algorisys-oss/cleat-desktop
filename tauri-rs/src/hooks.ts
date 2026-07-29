@@ -183,6 +183,29 @@ export function useDebounced<T>(value: T, ms = 200): T {
   return debounced;
 }
 
+export type Theme = "dark" | "light";
+
+/**
+ * The active theme, persisted and applied to the document element.
+ *
+ * The palette lives in CSS as a `:root[data-theme="light"]` override, so this
+ * only has to set the attribute — no colours are duplicated in TypeScript,
+ * where they would drift from the ones the contrast check was run against.
+ *
+ * Defaults to dark rather than to `prefers-color-scheme`. The app is dark-first
+ * by design and the window is small enough that following the OS would surprise
+ * more often than it would help; the toggle is one click either way.
+ */
+export function useTheme(): [Theme, (t: Theme) => void] {
+  const [theme, setTheme] = usePersisted<Theme>("cleat.theme", "dark");
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
+
+  return [theme, setTheme];
+}
+
 /** Persist a small piece of UI state (last compose dir, filters). */
 export function usePersisted<T>(key: string, fallback: T): [T, (v: T) => void] {
   const [value, setValue] = useState<T>(() => {
