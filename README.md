@@ -4,6 +4,8 @@ A fast, native desktop app for managing containers — **Docker and Podman**, si
 
 Built with Rust + Tauri v2 and React/TypeScript. No Electron, no background HTTP server, no daemon of its own.
 
+![Cleat's dashboard — container counts, runtime details and recently created containers, with the runtime switcher in the sidebar footer](docs/screenshots/dashboard.png)
+
 > A cleat is the fitting on a dock you tie a mooring line to — the small piece of hardware that holds things in place.
 
 ```
