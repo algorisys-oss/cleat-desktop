@@ -14,6 +14,7 @@ use crate::runtime;
 use crate::state::AppState;
 use futures_util::StreamExt;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
@@ -285,6 +286,16 @@ pub async fn list_volumes(state: State<'_, AppState>) -> AppResult<Vec<Volume>> 
     state.runtime().await?.list_volumes().await
 }
 
+/// Bytes on disk per volume name.
+///
+/// Its own command rather than a field on `list_volumes` because the daemon
+/// only computes volume sizes in its disk-usage report, which walks every
+/// volume and takes seconds; the listing polls, this does not.
+#[tauri::command]
+pub async fn volume_usage(state: State<'_, AppState>) -> AppResult<HashMap<String, i64>> {
+    state.runtime().await?.volume_usage().await
+}
+
 #[tauri::command]
 pub async fn create_volume(
     state: State<'_, AppState>,
@@ -329,31 +340,31 @@ pub async fn prune_volumes(state: State<'_, AppState>) -> AppResult<u64> {
 #[tauri::command]
 pub async fn compose_services(
     state: State<'_, AppState>,
-    project_dir: String,
+    project_path: String,
 ) -> AppResult<Vec<ComposeService>> {
-    state.runtime().await?.compose_services(&project_dir).await
+    state.runtime().await?.compose_services(&project_path).await
 }
 
 #[tauri::command]
-pub async fn compose_up(state: State<'_, AppState>, project_dir: String) -> AppResult<String> {
-    state.runtime().await?.compose_up(&project_dir).await
+pub async fn compose_up(state: State<'_, AppState>, project_path: String) -> AppResult<String> {
+    state.runtime().await?.compose_up(&project_path).await
 }
 
 #[tauri::command]
-pub async fn compose_down(state: State<'_, AppState>, project_dir: String) -> AppResult<String> {
-    state.runtime().await?.compose_down(&project_dir).await
+pub async fn compose_down(state: State<'_, AppState>, project_path: String) -> AppResult<String> {
+    state.runtime().await?.compose_down(&project_path).await
 }
 
 #[tauri::command]
 pub async fn compose_restart(
     state: State<'_, AppState>,
-    project_dir: String,
+    project_path: String,
     service: Option<String>,
 ) -> AppResult<String> {
     state
         .runtime()
         .await?
-        .compose_restart(&project_dir, service.as_deref())
+        .compose_restart(&project_path, service.as_deref())
         .await
 }
 
@@ -957,17 +968,17 @@ pub async fn stop_copy_image(
 pub async fn compose_exec(
     app: AppHandle,
     state: State<'_, AppState>,
-    project_dir: String,
+    project_path: String,
     action: crate::runtime::ComposeAction,
     service: Option<String>,
     channel: String,
 ) -> AppResult<()> {
     let rt = state.runtime().await?;
     let mut stream = rt
-        .compose_exec(&project_dir, action, service.as_deref())
+        .compose_exec(&project_path, action, service.as_deref())
         .await?;
 
-    let key = format!("compose:{project_dir}");
+    let key = format!("compose:{project_path}");
     let handle = tokio::spawn(async move {
         let mut failure: Option<String> = None;
         while let Some(item) = stream.next().await {
@@ -992,8 +1003,11 @@ pub async fn compose_exec(
 
 /// Cancel a running compose action. `kill_on_drop` terminates the child.
 #[tauri::command]
-pub async fn stop_compose_exec(state: State<'_, AppState>, project_dir: String) -> AppResult<bool> {
-    Ok(state.stop_stream(&format!("compose:{project_dir}")).await)
+pub async fn stop_compose_exec(
+    state: State<'_, AppState>,
+    project_path: String,
+) -> AppResult<bool> {
+    Ok(state.stop_stream(&format!("compose:{project_path}")).await)
 }
 
 /// Cancel every live stream, used when the UI navigates away wholesale.

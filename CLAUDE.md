@@ -26,6 +26,18 @@ override it.
 **Every shipit increments the version.** That is the point — the status bar
 shows the running version, so it has to move for the display to mean anything.
 
+## Updates ship from the same release
+
+Installed copies check GitHub Releases and offer the new version in the status
+bar; CI signs the updater artifacts with a minisign key held as a repository
+secret. `createUpdaterArtifacts` is on, so **a release build fails without
+`TAURI_SIGNING_PRIVATE_KEY`** — deliberately, because a release that shipped
+unsigned artifacts would leave every installed copy unable to update. The
+workflow checks for the secret before it builds anything.
+
+`.deb`, `.rpm` and the bare executables cannot self-update and are not meant to.
+See [docs/updates.md](docs/updates.md).
+
 ## The version lives in five files
 
 `scripts/bump-version.sh` is the only supported way to change it. Never edit
@@ -51,6 +63,7 @@ bundle, which is the reason for that indirection.
 ```sh
 ./dev-start.sh              # dev mode
 ./dev-start.sh --test       # Rust test suite
+python3 scripts/check-contrast.py --strict   # palette vs WCAG AA, both themes
 cd tauri-rs && npx tsc --noEmit
 cd tauri-rs/src-tauri && cargo test && cargo fmt && cargo clippy --all-targets
 cd tauri-rs && npm run tauri build      # local Linux bundles only

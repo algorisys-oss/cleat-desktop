@@ -7,9 +7,11 @@
 //!    string handed to a shell. The Electron backend interpolated a
 //!    user-supplied `projectDir` into `exec()`, so a directory named
 //!    `/tmp/x; rm -rf ~` executed. There is no shell in this path.
-//! 2. The project directory is canonicalised and checked before use, so a
-//!    non-existent or non-directory path fails cleanly instead of running the
-//!    command in an unexpected working directory.
+//! 2. The project path is canonicalised and checked before use, so a
+//!    non-existent one fails cleanly instead of running the command in an
+//!    unexpected working directory. It may name either the project directory
+//!    or the compose file itself; a file becomes a `-f` in the argv and its
+//!    directory becomes the working directory.
 
 use crate::error::{AppError, AppResult};
 use crate::model::ComposeService;
@@ -29,23 +31,90 @@ pub type LineStream = Pin<Box<dyn Stream<Item = AppResult<String>> + Send>>;
 /// many minutes on a slow link.
 const COMPOSE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
-/// Validate and canonicalise a compose project directory.
-pub fn resolve_project_dir(dir: &str) -> AppResult<PathBuf> {
-    if dir.trim().is_empty() {
-        return Err(AppError::Invalid("project directory is required".into()));
+/// A resolved compose project: a directory to run in, plus the file to use
+/// when the user named one instead of the directory holding it.
+///
+/// Both are accepted because a native directory picker greys files out — the
+/// only way to point at `stack.yml` is a file picker — and naming the file is
+/// also what makes a non-default file name usable at all.
+#[derive(Debug)]
+pub struct Project {
+    /// Canonical directory the compose command runs in.
+    pub dir: PathBuf,
+    /// File name within `dir`, when the user picked a file rather than a folder.
+    file: Option<String>,
+}
+
+impl Project {
+    /// `-f`, which compose requires *before* the subcommand.
+    pub fn flags(&self) -> Vec<String> {
+        match &self.file {
+            // Relative to `dir`, which is the command's working directory.
+            Some(name) => vec!["-f".into(), name.clone()],
+            None => Vec::new(),
+        }
     }
-    let path = PathBuf::from(dir);
-    let canonical = path
+
+    /// Fail unless there is a compose file to act on.
+    ///
+    /// A named file was already proven to exist by `resolve_project`; only a
+    /// directory still has to be searched.
+    pub fn require_compose_file(&self) -> AppResult<()> {
+        if self.file.is_some() {
+            return Ok(());
+        }
+        find_compose_file(&self.dir).map(|_| ())
+    }
+
+    /// The name compose defaults the project to — its directory — for `ps`
+    /// output that omits it.
+    pub fn name_hint(&self) -> String {
+        self.dir
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default()
+    }
+}
+
+/// Validate and canonicalise a compose project directory or compose file.
+pub fn resolve_project(path: &str) -> AppResult<Project> {
+    if path.trim().is_empty() {
+        return Err(AppError::Invalid(
+            "a compose project directory or file is required".into(),
+        ));
+    }
+    let canonical = PathBuf::from(path)
         .canonicalize()
-        .map_err(|e| AppError::Invalid(format!("project directory '{dir}': {e}")))?;
-    if !canonical.is_dir() {
-        return Err(AppError::Invalid(format!("'{dir}' is not a directory")));
+        .map_err(|e| AppError::Invalid(format!("compose project '{path}': {e}")))?;
+
+    if canonical.is_dir() {
+        return Ok(Project {
+            dir: canonical,
+            file: None,
+        });
     }
-    Ok(canonical)
+    if !canonical.is_file() {
+        return Err(AppError::Invalid(format!(
+            "'{path}' is neither a directory nor a file"
+        )));
+    }
+
+    let file = canonical
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .ok_or_else(|| AppError::Invalid(format!("'{path}' has no file name")))?;
+    let dir = canonical
+        .parent()
+        .ok_or_else(|| AppError::Invalid(format!("'{path}' has no parent directory")))?
+        .to_path_buf();
+    Ok(Project {
+        dir,
+        file: Some(file),
+    })
 }
 
 /// Find the compose file in a project directory, honouring both spellings.
-pub fn find_compose_file(dir: &std::path::Path) -> AppResult<PathBuf> {
+fn find_compose_file(dir: &std::path::Path) -> AppResult<PathBuf> {
     for name in [
         "compose.yaml",
         "compose.yml",
@@ -63,14 +132,18 @@ pub fn find_compose_file(dir: &std::path::Path) -> AppResult<PathBuf> {
     )))
 }
 
-/// Run `<argv> <args>` in `dir` and return stdout, or the command's stderr as an error.
-pub async fn run(argv: &[String], args: &[&str], dir: &std::path::Path) -> AppResult<String> {
+/// Run `<argv> <args>` in the project and return stdout, or the command's
+/// stderr as an error.
+pub async fn run(argv: &[String], project: &Project, args: &[&str]) -> AppResult<String> {
     let (program, leading) = argv
         .split_first()
         .ok_or_else(|| AppError::Other("empty compose command".into()))?;
 
     let mut cmd = Command::new(program);
-    cmd.args(leading).args(args).current_dir(dir);
+    cmd.args(leading)
+        .args(project.flags())
+        .args(args)
+        .current_dir(&project.dir);
 
     let output = cmd.output().await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -104,7 +177,7 @@ pub async fn run(argv: &[String], args: &[&str], dir: &std::path::Path) -> AppRe
 ///
 /// Cancellation is free: `kill_on_drop` terminates the child when the consumer
 /// drops the stream.
-pub fn stream(argv: &[String], args: &[String], dir: &std::path::Path) -> AppResult<LineStream> {
+pub fn stream(argv: &[String], project: &Project, args: &[String]) -> AppResult<LineStream> {
     let (program, leading) = argv
         .split_first()
         .ok_or_else(|| AppError::Other("empty compose command".into()))?;
@@ -112,8 +185,9 @@ pub fn stream(argv: &[String], args: &[String], dir: &std::path::Path) -> AppRes
 
     let mut cmd = Command::new(&program);
     cmd.args(leading)
+        .args(project.flags())
         .args(args)
-        .current_dir(dir)
+        .current_dir(&project.dir)
         // No stdin: a compose command must never block waiting on a prompt.
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -310,5 +384,74 @@ mod tests {
     fn ignores_garbage_lines() {
         let out = "not json\n{\"Service\":\"web\",\"State\":\"running\"}\n";
         assert_eq!(parse_ps_json(out, "p").len(), 1);
+    }
+
+    /// A scratch project directory containing `files`, removed on drop.
+    struct Fixture(PathBuf);
+
+    impl Fixture {
+        fn new(name: &str, files: &[&str]) -> Self {
+            let dir = std::env::temp_dir().join(format!("cleat-test-compose-{name}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("fixture dir");
+            for file in files {
+                std::fs::write(dir.join(file), "services: {}\n").expect("fixture file");
+            }
+            Self(dir.canonicalize().expect("canonical fixture dir"))
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_directory_resolves_without_flags() {
+        let fx = Fixture::new("dir", &["compose.yaml"]);
+        let project = resolve_project(&fx.0.to_string_lossy()).expect("directory resolves");
+        assert_eq!(project.dir, fx.0);
+        assert!(project.flags().is_empty());
+        project.require_compose_file().expect("file is found");
+    }
+
+    #[test]
+    fn a_file_resolves_to_its_directory_and_names_itself() {
+        let fx = Fixture::new("file", &["stack.yml"]);
+        let picked = fx.0.join("stack.yml");
+        let project = resolve_project(&picked.to_string_lossy()).expect("file resolves");
+        assert_eq!(project.dir, fx.0);
+        // Named explicitly, so compose does not have to guess — and a name it
+        // would never guess still works.
+        assert_eq!(project.flags(), vec!["-f".to_string(), "stack.yml".into()]);
+        project
+            .require_compose_file()
+            .expect("the picked file counts");
+    }
+
+    #[test]
+    fn a_directory_without_a_compose_file_is_reported() {
+        let fx = Fixture::new("empty", &[]);
+        let project = resolve_project(&fx.0.to_string_lossy()).expect("directory resolves");
+        let err = project
+            .require_compose_file()
+            .expect_err("nothing to compose here");
+        assert_eq!(err.kind(), "not_found");
+    }
+
+    #[test]
+    fn a_missing_path_is_invalid() {
+        let err = resolve_project("/cleat/no/such/path").expect_err("missing path is rejected");
+        assert_eq!(err.kind(), "invalid");
+        let err = resolve_project("   ").expect_err("blank path is rejected");
+        assert_eq!(err.kind(), "invalid");
+    }
+
+    #[test]
+    fn the_project_name_falls_back_to_the_directory() {
+        let fx = Fixture::new("naming", &["compose.yaml"]);
+        let project = resolve_project(&fx.0.join("compose.yaml").to_string_lossy()).unwrap();
+        assert_eq!(project.name_hint(), "cleat-test-compose-naming");
     }
 }

@@ -899,6 +899,43 @@ impl Engine {
             .collect())
     }
 
+    /// Bytes on disk per volume name, from the daemon's disk-usage report.
+    ///
+    /// `GET /volumes` leaves `UsageData` null on both Docker and Podman — only
+    /// `GET /system/df` fills it in, and it earns that by walking every volume,
+    /// so this takes a second or more on a busy machine and must not be folded
+    /// into the polled listing.
+    ///
+    /// Read untyped where possible, unlike the rest of this file. The two
+    /// runtimes answer in two different shapes — Docker's newer API nests the
+    /// volumes under `VolumeUsage.Items`, Podman still returns the flat
+    /// `Volumes` — and bollard's generated model has a field for only the
+    /// first, so the typed path silently reports nothing on Podman.
+    ///
+    /// Volumes the daemon declines to size are absent from the map rather than
+    /// present as zero, so the UI can say "unknown" instead of "empty".
+    ///
+    /// Scoped to volumes with `?type=volume`. Without it Docker also walks the
+    /// containers, and a container removed mid-walk fails the *whole* request
+    /// with a 500 — which the concurrent test suite reproduces readily and a
+    /// busy machine will too. Podman ignores the parameter and answers in full,
+    /// which costs nothing here.
+    pub async fn volume_usage(&self) -> AppResult<HashMap<String, i64>> {
+        if let Some(socket) = self.socket.as_deref() {
+            let value = crate::runtime::raw::get_json(socket, "/system/df?type=volume").await?;
+            return Ok(volume_sizes_from_df(&value));
+        }
+
+        // No unix socket — Windows. Only the typed path is available, which
+        // means only Docker's newer shape.
+        let options = qp::DataUsageOptionsBuilder::new()
+            ._type(vec!["volume".into()])
+            .build();
+        let df = self.docker.df(Some(options)).await?;
+        let items = df.volume_usage.and_then(|u| u.items).unwrap_or_default();
+        Ok(volume_sizes_from_items(&items))
+    }
+
     pub async fn create_volume(&self, name: &str, driver: Option<&str>) -> AppResult<Volume> {
         if name.trim().is_empty() {
             return Err(AppError::Invalid("volume name is required".into()));
@@ -1125,6 +1162,38 @@ pub fn split_reference(image: &str) -> (String, String) {
         }
         _ => (image.to_string(), "latest".to_string()),
     }
+}
+
+/// Pull per-volume sizes out of a `/system/df` response, either shape.
+///
+/// Docker from API v1.49 nests them under `VolumeUsage.Items`; Podman and older
+/// Docker return the flat `Volumes`. Both entries otherwise look the same, so
+/// whichever list is present is read the same way.
+fn volume_sizes_from_df(df: &serde_json::Value) -> HashMap<String, i64> {
+    let items = df
+        .get("VolumeUsage")
+        .and_then(|u| u.get("Items"))
+        .or_else(|| df.get("Volumes"))
+        .and_then(|v| v.as_array());
+    match items {
+        Some(items) => volume_sizes_from_items(items),
+        None => HashMap::new(),
+    }
+}
+
+/// `[{"Name": …, "UsageData": {"Size": …}}, …]` reduced to name → bytes.
+///
+/// The daemon reports -1 for a volume it could not size; dropping those keeps
+/// "unknown" distinguishable from "empty".
+fn volume_sizes_from_items(items: &[serde_json::Value]) -> HashMap<String, i64> {
+    items
+        .iter()
+        .filter_map(|v| {
+            let name = v.get("Name")?.as_str()?;
+            let size = v.get("UsageData")?.get("Size")?.as_i64()?;
+            (size >= 0).then(|| (name.to_string(), size))
+        })
+        .collect()
 }
 
 fn normalize_health(raw: Option<String>) -> String {

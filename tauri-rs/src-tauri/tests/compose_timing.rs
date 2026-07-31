@@ -78,6 +78,40 @@ async fn compose_down_streams_output_and_terminates() {
     println!("first output at {first:?}, completed in {total:?}, {} lines", lines.len());
 }
 
+/// A compose file the runtime would never find by name still works when the
+/// user points at the file itself.
+///
+/// The directory picker greys files out, so this path only exists because a
+/// file picker was added alongside it; `stack.yml` is not one of the four names
+/// compose searches for, and the same directory must therefore fail when named
+/// as a directory. That contrast is the whole test.
+#[tokio::test]
+async fn a_named_compose_file_is_used_directly() {
+    let Ok(rt) = DockerRuntime::connect().await else {
+        eprintln!("skipping: no docker");
+        return;
+    };
+    let dir = std::env::temp_dir().join("cleat-compose-named-fixture");
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    std::fs::write(
+        dir.join("stack.yml"),
+        "services:\n  idle:\n    image: nginx:alpine\n",
+    )
+    .expect("fixture file");
+
+    rt.compose_services(&dir.join("stack.yml").to_string_lossy())
+        .await
+        .expect("a named compose file should be usable");
+
+    let err = rt
+        .compose_services(&dir.to_string_lossy())
+        .await
+        .expect_err("the directory alone holds no file compose would find");
+    assert_eq!(err.kind(), "not_found");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `down` applies to the whole project; naming a service must be rejected.
 #[tokio::test]
 async fn compose_down_rejects_a_service_argument() {

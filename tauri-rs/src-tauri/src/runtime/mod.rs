@@ -22,6 +22,7 @@ use crate::model::{
 };
 use async_trait::async_trait;
 use futures_util::Stream;
+use std::collections::HashMap;
 use std::pin::Pin;
 
 /// Streams handed back to the command layer, which forwards them onto Tauri events.
@@ -184,6 +185,13 @@ pub trait ContainerRuntime: Send + Sync {
 
     // -- volumes -----------------------------------------------------------
     async fn list_volumes(&self) -> AppResult<Vec<Volume>>;
+    /// Bytes on disk per volume name.
+    ///
+    /// Separate from `list_volumes` because the volume listing never carries
+    /// usage: only the daemon's disk-usage endpoint computes it, and computing
+    /// it means walking every volume, which takes seconds. The listing stays
+    /// cheap enough to poll; this is asked for once.
+    async fn volume_usage(&self) -> AppResult<HashMap<String, i64>>;
     async fn create_volume(&self, name: &str, driver: Option<&str>) -> AppResult<Volume>;
     async fn remove_volume(&self, name: &str, force: bool) -> AppResult<()>;
     async fn inspect_volume(&self, name: &str) -> AppResult<serde_json::Value>;
@@ -192,10 +200,10 @@ pub trait ContainerRuntime: Send + Sync {
     // -- compose -----------------------------------------------------------
     /// The compose CLI for this runtime, as argv (e.g. `["docker", "compose"]`).
     fn compose_argv(&self) -> Vec<String>;
-    async fn compose_services(&self, project_dir: &str) -> AppResult<Vec<ComposeService>>;
-    async fn compose_up(&self, project_dir: &str) -> AppResult<String>;
-    async fn compose_down(&self, project_dir: &str) -> AppResult<String>;
-    async fn compose_restart(&self, project_dir: &str, service: Option<&str>) -> AppResult<String>;
+    async fn compose_services(&self, project_path: &str) -> AppResult<Vec<ComposeService>>;
+    async fn compose_up(&self, project_path: &str) -> AppResult<String>;
+    async fn compose_down(&self, project_path: &str) -> AppResult<String>;
+    async fn compose_restart(&self, project_path: &str, service: Option<&str>) -> AppResult<String>;
     /// Run `up`/`down`/`restart` with live output.
     ///
     /// Preferred over the blocking variants above for anything that starts or
@@ -204,7 +212,7 @@ pub trait ContainerRuntime: Send + Sync {
     /// reads as a hang.
     async fn compose_exec(
         &self,
-        project_dir: &str,
+        project_path: &str,
         action: ComposeAction,
         service: Option<&str>,
     ) -> AppResult<compose::LineStream>;

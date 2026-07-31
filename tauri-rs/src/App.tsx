@@ -1,8 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+// The bundle icon itself, not a copy of it: this is the file Tauri stamps onto
+// the executable and the launcher, so the mark in the window cannot drift from
+// the one on the desktop. Vite fingerprints and inlines it at build time.
+import logo from "../src-tauri/icons/128x128.png";
 import * as api from "./api";
 import { usePersisted, usePolled, useTheme } from "./hooks";
 import type { ClusterInfo, RuntimeInfo, RuntimeKind, SystemSummary } from "./types";
 import { Badge, Button, Dot, Spinner, ThemeToggle, ToastProvider, useToast } from "./ui";
+import { RELEASES_URL, useUpdates, type UpdateState } from "./updates";
 import { formatBytes } from "./util";
 import Containers from "./views/Containers";
 import Dashboard from "./views/Dashboard";
@@ -145,15 +150,32 @@ function Shell() {
       >
         <div
           className={`flex items-center border-b border-edge py-3 ${
-            collapsed ? "justify-center px-2" : "justify-between px-4"
+            collapsed ? "justify-between px-2" : "justify-between px-4"
           }`}
         >
-          {!collapsed && (
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-ink">Cleat Cockpit</div>
-              <div className="truncate text-xs text-ink-faint">Docker · Podman · Kubernetes</div>
-            </div>
-          )}
+          {/* The window itself wears the platform's title bar, which we cannot
+              draw into, so the app's identity lives here — top-left, above the
+              nav, present in both widths. */}
+          <div className="flex min-w-0 items-center gap-2.5">
+            <img
+              src={logo}
+              alt=""
+              aria-hidden="true"
+              width={collapsed ? 26 : 28}
+              height={collapsed ? 26 : 28}
+              className="shrink-0 rounded"
+              // Collapsed, the mark is the only thing naming the app.
+              title={collapsed ? "Cleat Cockpit" : undefined}
+            />
+            {!collapsed && (
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-ink">Cleat Cockpit</div>
+                <div className="truncate text-xs text-ink-faint">
+                  Docker · Podman · Kubernetes
+                </div>
+              </div>
+            )}
+          </div>
           <button
             onClick={() => setCollapsed(!collapsed)}
             title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
@@ -364,11 +386,96 @@ function StatusBar({
           Developed with <span className="text-danger">♥</span> by Algorisys Technologies
         </span>
         <ThemeToggle theme={theme} onToggle={onToggleTheme} />
-        <span className="font-mono" title={`Cleat Cockpit ${__APP_VERSION__}`}>
-          v{__APP_VERSION__}
-        </span>
+        <UpdateStatus />
       </div>
     </footer>
+  );
+}
+
+/**
+ * The version, and whatever the updater currently has to say about it.
+ *
+ * Lives on the version itself because that is where someone looks when they
+ * wonder whether they are current, and clicking it asks — an update check is a
+ * question about this number. Nothing here is modal: the offer sits in the
+ * status bar until it is taken, and declining it costs one click.
+ */
+function UpdateStatus() {
+  const { state, check, install, dismiss } = useUpdates();
+  const toast = useToast();
+  const checking = state.status === "checking";
+
+  // A manual check that finds nothing says so; the automatic one stays silent,
+  // which is why this is here and not in the hook.
+  const previous = useRef<UpdateState["status"]>("idle");
+  useEffect(() => {
+    if (state.status === "current" && previous.current === "checking") {
+      toast.push("accent", `Cleat ${__APP_VERSION__} is the latest version`);
+    }
+    if (state.status === "failed" && previous.current !== "failed") {
+      toast.failure(
+        state.canSelfUpdate
+          ? state.message
+          : "This install cannot update itself — get the new version from Releases",
+      );
+    }
+    previous.current = state.status;
+  }, [state, toast]);
+
+  return (
+    <>
+      {state.status === "downloading" && (
+        <span className="text-accent">
+          Downloading {state.version}
+          {state.percent !== null ? ` · ${state.percent}%` : "…"}
+        </span>
+      )}
+
+      {(state.status === "ready" || state.status === "installing") && (
+        <span className="flex items-center gap-1.5">
+          <button
+            onClick={install}
+            disabled={state.status === "installing"}
+            title={`Install Cleat ${state.version} and restart`}
+            className="rounded border border-accent/40 bg-accent/15 px-1.5 py-0.5 font-medium text-accent transition-colors hover:bg-accent/25 disabled:opacity-60"
+          >
+            {state.status === "installing"
+              ? `Installing ${state.version}…`
+              : `Update to ${state.version}`}
+          </button>
+          {state.status === "ready" && (
+            <button
+              onClick={dismiss}
+              title="Not now — the update is kept and offered again next launch"
+              className="rounded px-1 text-ink-faint transition-colors hover:text-ink"
+            >
+              ✕
+            </button>
+          )}
+        </span>
+      )}
+
+      {state.status === "failed" && !state.canSelfUpdate && (
+        <a
+          href={RELEASES_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="text-accent underline-offset-2 hover:underline"
+        >
+          New version available
+        </a>
+      )}
+
+      <button
+        onClick={check}
+        disabled={checking}
+        title={checking ? "Checking for updates…" : `Cleat Cockpit ${__APP_VERSION__} — check for updates`}
+        className="flex items-center gap-1.5 rounded px-1 font-mono transition-colors hover:text-ink disabled:opacity-60"
+      >
+        {checking && <Spinner size={10} />}
+        v{__APP_VERSION__}
+      </button>
+    </>
   );
 }
 

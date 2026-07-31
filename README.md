@@ -55,7 +55,7 @@ Built with Rust + Tauri v2 and React/TypeScript. No Electron, no background HTTP
 
 **Light and dark themes** — a bulb in the sidebar footer. Every text colour in both palettes is held to WCAG AA against both background surfaces, verified by converting OKLCH to sRGB and computing the ratio rather than by eye.
 
-**Compose** — pick a project directory, bring stacks up and down, restart individual services, with live streaming output and a working Cancel button.
+**Compose** — pick a project folder or a compose file, bring stacks up and down, restart individual services, with live streaming output and a working Cancel button.
 
 **Activity log** — every call Cleat makes to a runtime, with arguments, timing and outcome. These are the real Engine API requests, not reconstructed `docker` commands; compose rows show the literal argv because compose is the one subprocess. Values that look like secrets are masked.
 
@@ -133,6 +133,18 @@ GitHub does not preserve the executable bit on release assets.
 They are **not code-signed**. macOS needs
 `xattr -dr com.apple.quarantine /Applications/Cleat.app` after installing, and
 Windows SmartScreen warns on first run.
+
+### Updating
+
+Cleat checks for a newer release shortly after launch and offers it in the
+status bar; the version number there is also a *check now* button. Nothing is
+installed until you say so, and dismissing the offer keeps the download for next
+launch.
+
+The `.AppImage`, the Windows installers and the macOS app can replace
+themselves. A `.deb` or `.rpm` belongs to your package manager and the bare
+executables belong to wherever you put them, so those are pointed at the
+releases page instead. See [docs/updates.md](docs/updates.md).
 
 ## Building a production executable
 

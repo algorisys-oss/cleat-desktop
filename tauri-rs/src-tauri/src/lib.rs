@@ -15,6 +15,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // Updates. The check is driven from the frontend rather than from here,
+        // because it is a thing the user is told about and can decline, not a
+        // thing that happens to them during startup. See `src/updates.ts` and
+        // `docs/updates.md`.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // Only for the relaunch that finishes an update.
+        .plugin(tauri_plugin_process::init())
         .manage(AppState::new())
         .setup(|app| {
             // Pick a working runtime in the background so the window paints
@@ -73,6 +80,7 @@ pub fn run() {
             commands::disconnect_network,
             // volumes
             commands::list_volumes,
+            commands::volume_usage,
             commands::create_volume,
             commands::remove_volume,
             commands::inspect_volume,

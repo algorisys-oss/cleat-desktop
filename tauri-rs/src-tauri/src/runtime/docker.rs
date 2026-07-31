@@ -13,6 +13,7 @@ use crate::runtime::{
 };
 use async_trait::async_trait;
 use bollard::Docker;
+use std::collections::HashMap;
 
 pub struct DockerRuntime {
     engine: Engine,
@@ -313,6 +314,10 @@ impl ContainerRuntime for DockerRuntime {
         self.engine.list_volumes().await
     }
 
+    async fn volume_usage(&self) -> AppResult<HashMap<String, i64>> {
+        self.engine.volume_usage().await
+    }
+
     async fn create_volume(&self, name: &str, driver: Option<&str>) -> AppResult<Volume> {
         self.engine.create_volume(name, driver).await
     }
@@ -335,47 +340,47 @@ impl ContainerRuntime for DockerRuntime {
         vec!["docker".into(), "compose".into()]
     }
 
-    async fn compose_services(&self, project_dir: &str) -> AppResult<Vec<ComposeService>> {
-        let dir = compose::resolve_project_dir(project_dir)?;
-        compose::find_compose_file(&dir)?;
-        let out = compose::run(&self.compose_argv(), &["ps", "--format", "json"], &dir).await?;
-        let fallback = dir
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        Ok(compose::parse_ps_json(&out, &fallback))
+    async fn compose_services(&self, project_path: &str) -> AppResult<Vec<ComposeService>> {
+        let project = compose::resolve_project(project_path)?;
+        project.require_compose_file()?;
+        let out = compose::run(&self.compose_argv(), &project, &["ps", "--format", "json"]).await?;
+        Ok(compose::parse_ps_json(&out, &project.name_hint()))
     }
 
-    async fn compose_up(&self, project_dir: &str) -> AppResult<String> {
-        let dir = compose::resolve_project_dir(project_dir)?;
-        compose::find_compose_file(&dir)?;
-        compose::run(&self.compose_argv(), &["up", "-d"], &dir).await
+    async fn compose_up(&self, project_path: &str) -> AppResult<String> {
+        let project = compose::resolve_project(project_path)?;
+        project.require_compose_file()?;
+        compose::run(&self.compose_argv(), &project, &["up", "-d"]).await
     }
 
-    async fn compose_down(&self, project_dir: &str) -> AppResult<String> {
-        let dir = compose::resolve_project_dir(project_dir)?;
-        compose::run(&self.compose_argv(), &["down"], &dir).await
+    async fn compose_down(&self, project_path: &str) -> AppResult<String> {
+        let project = compose::resolve_project(project_path)?;
+        compose::run(&self.compose_argv(), &project, &["down"]).await
     }
 
-    async fn compose_restart(&self, project_dir: &str, service: Option<&str>) -> AppResult<String> {
-        let dir = compose::resolve_project_dir(project_dir)?;
+    async fn compose_restart(
+        &self,
+        project_path: &str,
+        service: Option<&str>,
+    ) -> AppResult<String> {
+        let project = compose::resolve_project(project_path)?;
         let mut args = vec!["restart"];
         if let Some(svc) = service {
             validate_service_name(svc)?;
             args.push(svc);
         }
-        compose::run(&self.compose_argv(), &args, &dir).await
+        compose::run(&self.compose_argv(), &project, &args).await
     }
 
     async fn compose_exec(
         &self,
-        project_dir: &str,
+        project_path: &str,
         action: crate::runtime::ComposeAction,
         service: Option<&str>,
     ) -> AppResult<compose::LineStream> {
-        let dir = compose::resolve_project_dir(project_dir)?;
+        let project = compose::resolve_project(project_path)?;
         if action == crate::runtime::ComposeAction::Up {
-            compose::find_compose_file(&dir)?;
+            project.require_compose_file()?;
         }
         let mut args = action.argv();
         if let Some(svc) = service {
@@ -387,6 +392,6 @@ impl ContainerRuntime for DockerRuntime {
             validate_service_name(svc)?;
             args.push(svc.to_string());
         }
-        compose::stream(&self.compose_argv(), &args, &dir)
+        compose::stream(&self.compose_argv(), &project, &args)
     }
 }

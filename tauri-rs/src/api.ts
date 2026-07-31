@@ -98,6 +98,14 @@ export const disconnectNetwork = (network: string, container: string) =>
 // --------------------------------------------------------------------- volumes
 
 export const listVolumes = () => invoke<Volume[]>("list_volumes");
+/**
+ * Bytes on disk per volume name.
+ *
+ * Separate from listVolumes because the daemon only sizes volumes in its
+ * disk-usage report, which walks every volume and takes seconds. Asked for
+ * once, not on the poll.
+ */
+export const volumeUsage = () => invoke<Record<string, number>>("volume_usage");
 export const createVolume = (name: string, driver?: string) =>
   invoke<Volume>("create_volume", { name, driver: driver ?? null });
 export const removeVolume = (name: string, force = false) =>
@@ -107,12 +115,12 @@ export const pruneVolumes = () => invoke<number>("prune_volumes");
 
 // --------------------------------------------------------------------- compose
 
-export const composeServices = (projectDir: string) =>
-  invoke<ComposeService[]>("compose_services", { projectDir });
-export const composeUp = (projectDir: string) => invoke<string>("compose_up", { projectDir });
-export const composeDown = (projectDir: string) => invoke<string>("compose_down", { projectDir });
-export const composeRestart = (projectDir: string, service?: string) =>
-  invoke<string>("compose_restart", { projectDir, service: service ?? null });
+export const composeServices = (projectPath: string) =>
+  invoke<ComposeService[]>("compose_services", { projectPath });
+export const composeUp = (projectPath: string) => invoke<string>("compose_up", { projectPath });
+export const composeDown = (projectPath: string) => invoke<string>("compose_down", { projectPath });
+export const composeRestart = (projectPath: string, service?: string) =>
+  invoke<string>("compose_restart", { projectPath, service: service ?? null });
 
 // ------------------------------------------------------------------- streaming
 //
@@ -246,7 +254,7 @@ export function subscribeImageCopy(
  * SIGTERM. Use this so the UI can show progress instead of a dead spinner.
  */
 export function subscribeComposeExec(
-  projectDir: string,
+  projectPath: string,
   action: ComposeAction,
   onLine: (line: string) => void,
   opts: { service?: string; onEnd?: (error: string | null) => void } = {},
@@ -255,19 +263,19 @@ export function subscribeComposeExec(
     "compose",
     (channel) =>
       invoke<void>("compose_exec", {
-        projectDir,
+        projectPath,
         action,
         service: opts.service ?? null,
         channel,
       }),
-    () => invoke<boolean>("stop_compose_exec", { projectDir }),
+    () => invoke<boolean>("stop_compose_exec", { projectPath }),
     onLine,
     opts.onEnd,
   );
 }
 
-export const stopComposeExec = (projectDir: string) =>
-  invoke<boolean>("stop_compose_exec", { projectDir });
+export const stopComposeExec = (projectPath: string) =>
+  invoke<boolean>("stop_compose_exec", { projectPath });
 
 // ------------------------------------------------------------------------ exec
 

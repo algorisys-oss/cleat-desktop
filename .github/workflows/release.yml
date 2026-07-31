@@ -73,6 +73,20 @@ jobs:
         working-directory: tauri-rs/src-tauri
         run: cargo test
 
+      # The updater signs its artifacts, and the build fails without the key —
+      # but it fails deep inside the bundler on four runners at once, twenty
+      # minutes in. Fail here instead, with the fix in the message.
+      - name: Check the updater signing key is present
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set. Updater artifacts \
+          cannot be signed without it and the build will fail. Add it under \
+          Settings > Secrets and variables > Actions (see docs/updates.md)."
+            exit 1
+          fi
+
   build:
     name: Build ${{ matrix.label }}
     needs: test
@@ -156,6 +170,13 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the updater artifacts and the `latest.json` the running app
+          # reads. This is not OS code signing — it is the separate minisign
+          # key that proves an update came from this project, and the app
+          # refuses any update it cannot verify against the public key baked
+          # into tauri.conf.json.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: tauri-rs
           tagName: ${{ inputs.tag || github.ref_name }}
@@ -179,6 +200,11 @@ jobs:
 
             Cleat needs a reachable Docker or Podman socket; Podman users may
             need `systemctl --user start podman.socket`.
+
+            **Updates.** Installed copies check here for newer releases and
+            offer them in the status bar. The AppImage, the Windows installers
+            and the macOS app update themselves; `.deb`, `.rpm` and the bare
+            executables cannot, and are pointed back at this page instead.
           # Published immediately. Flip to true if you would rather review the
           # notes before it goes public.
           releaseDraft: false

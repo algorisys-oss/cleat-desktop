@@ -288,7 +288,9 @@ export default function Containers() {
                       <div className="flex items-center gap-1.5">
                         <span className="font-mono text-xs text-ink-faint">{shortId(c.id)}</span>
                         {c.composeProject && (
-                          <span className="rounded bg-surface-3 px-1 text-[10px] text-ink-faint">
+                          // ink-dim, not ink-faint: the chip sits on surface-3,
+                          // where faint is 3.35:1 in dark — below AA at 10px.
+                          <span className="rounded bg-surface-3 px-1 text-[10px] text-ink-dim">
                             {c.composeProject}
                           </span>
                         )}

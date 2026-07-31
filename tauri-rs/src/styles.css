@@ -4,11 +4,18 @@
    long stretches, so the defaults lean dark and low-contrast-background.
    Light is an override below rather than a second source of truth.
 
-   Every text token is held to WCAG AA (4.5:1) against both surface-0 and
-   surface-1, checked by converting OKLCH to linear sRGB and computing the
-   ratio rather than by eye. `ink-faint` was 4.14:1 on surface-1 and is now
-   0.61 for exactly that reason — it carries ages, ids and counts, which are
-   small and are the first thing to become unreadable. */
+   Every text token is held to WCAG AA (4.5:1) against every surface it is
+   actually drawn on, which includes surface-2 — chips and hovered rows put
+   10px text there. Only ink and ink-dim are ever drawn on surface-3, and that
+   is a constraint, not an accident: nothing else clears AA against it.
+   `scripts/check-contrast.py` has the numbers and fails on a regression; it
+   converts OKLCH to linear sRGB and computes the ratios rather than trusting
+   the eye.
+
+   `ink-faint` is the token that keeps failing, because it carries ages, ids
+   and counts at 10-12px — the first thing to become unreadable. It was raised
+   once to clear surface-1, and again (0.61 → 0.64) to clear surface-2, where
+   it was 4.10:1 and is now 4.62:1. */
 @theme {
   --color-surface-0: oklch(0.17 0.012 265);
   --color-surface-1: oklch(0.21 0.014 265);
@@ -17,19 +24,22 @@
   --color-edge: oklch(0.36 0.018 265);
   --color-ink: oklch(0.95 0.005 265);
   --color-ink-dim: oklch(0.72 0.012 265);
-  --color-ink-faint: oklch(0.61 0.014 265);
+  --color-ink-faint: oklch(0.64 0.014 265);
 
   --color-accent: oklch(0.68 0.15 250);
   --color-ok: oklch(0.72 0.16 155);
   --color-warn: oklch(0.78 0.15 80);
-  --color-danger: oklch(0.65 0.19 25);
+  /* 0.67, not 0.65: at 0.65 this is 4.39:1 on surface-2, and error text does
+     land there — the Activity log renders failures at 11px inside rows that
+     hover to that surface. Chroma is untouched, so it is the same red. */
+  --color-danger: oklch(0.67 0.19 25);
 }
 
 /* Light theme.
    Not the dark values inverted: on a light background the accent colours have
    to come *down* in lightness to stay legible, which is why they are darker
-   here than their dark-theme counterparts rather than lighter. Worst ratio in
-   this palette is 5.18:1. */
+   here than their dark-theme counterparts rather than lighter. Worst text
+   ratio here is 4.74:1 (warn on surface-2); on surface-0/1 it is 5.18:1. */
 :root[data-theme="light"] {
   --color-surface-0: oklch(0.99 0.002 265);
   --color-surface-1: oklch(0.97 0.004 265);
@@ -100,6 +110,44 @@ body {
 }
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* The theme toggle's bulb.
+   `currentColor` for the halo, so it inherits whatever ink token the button is
+   wearing and cannot drift out of contrast — the glow is never the thing being
+   read, only the icon it surrounds. Breathing rather than blinking: 3s, and the
+   floor is a visible 1px halo, so at no point in the cycle does the control
+   look switched off. */
+@keyframes bulb-breathe {
+  from {
+    filter: drop-shadow(0 0 1px currentColor);
+  }
+  to {
+    filter: drop-shadow(0 0 4px currentColor);
+  }
+}
+
+/* Lit: the light theme is on, so the bulb is on. */
+.bulb-lit {
+  animation: bulb-breathe 3s ease-in-out infinite alternate;
+}
+
+/* Unlit: a static halo on hover, which is the affordance — this is the control
+   that turns the lights on. */
+.bulb {
+  transition: filter 200ms ease;
+}
+button:hover > .bulb {
+  filter: drop-shadow(0 0 3px currentColor);
+}
+
+/* An animation in the corner of the eye for the whole session is exactly what
+   this setting exists to stop. The lit state still reads, it just holds still. */
+@media (prefers-reduced-motion: reduce) {
+  .bulb-lit {
+    animation: none;
+    filter: drop-shadow(0 0 2.5px currentColor);
+  }
 }
 
 /* Tauri drag region needs this to avoid text selection while dragging. */

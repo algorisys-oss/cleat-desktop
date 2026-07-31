@@ -23,11 +23,14 @@ import { shortId } from "../util";
  *
  * The Electron version took the project directory as free text and passed it
  * into a shell command; here it goes to a native picker and the Rust side
- * canonicalises it before running an argv-form command.
+ * canonicalises it before running an argv-form command. A project is named
+ * either by its folder or by the compose file itself.
  */
 export default function Compose() {
-  const [projectDir, setProjectDir] = usePersisted<string>("compose.projectDir", "");
-  const [draft, setDraft] = useState(projectDir);
+  // The key predates files being accepted, and is kept so an existing project
+  // survives the upgrade; what it holds is now either.
+  const [projectPath, setProjectPath] = usePersisted<string>("compose.projectDir", "");
+  const [draft, setDraft] = useState(projectPath);
   const [services, setServices] = useState<ComposeService[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
@@ -37,15 +40,15 @@ export default function Compose() {
   const toast = useToast();
 
   const load = useCallback(
-    async (dir: string) => {
-      if (!dir.trim()) {
+    async (path: string) => {
+      if (!path.trim()) {
         setServices(null);
         setError(null);
         return;
       }
       setLoading(true);
       try {
-        const list = await api.composeServices(dir);
+        const list = await api.composeServices(path);
         setServices(list);
         setError(null);
       } catch (e) {
@@ -59,24 +62,43 @@ export default function Compose() {
   );
 
   useEffect(() => {
-    void load(projectDir);
-  }, [projectDir, load]);
+    void load(projectPath);
+  }, [projectPath, load]);
 
   // Poll only while a project is loaded, so this view is idle by default.
   useEffect(() => {
-    if (!projectDir.trim()) return;
+    if (!projectPath.trim()) return;
     const t = setInterval(() => {
-      if (document.visibilityState === "visible") void load(projectDir);
+      if (document.visibilityState === "visible") void load(projectPath);
     }, 6000);
     return () => clearInterval(t);
-  }, [projectDir, load]);
+  }, [projectPath, load]);
 
-  const browse = async () => {
+  /**
+   * Pick a project, either way round.
+   *
+   * A directory dialog greys files out — which reads as "your compose file is
+   * not allowed" — and a file dialog cannot select a folder, so both are
+   * offered. Picking the file is also the only way to use one the runtime would
+   * never find by name, such as `stack.yml`.
+   */
+  const browse = async (mode: "folder" | "file") => {
+    const options =
+      mode === "folder"
+        ? { directory: true, multiple: false, title: "Select compose project folder" }
+        : {
+            multiple: false,
+            title: "Select compose file",
+            filters: [
+              { name: "Compose file", extensions: ["yaml", "yml"] },
+              { name: "All files", extensions: ["*"] },
+            ],
+          };
     try {
-      const picked = await open({ directory: true, multiple: false, title: "Select compose project" });
+      const picked = await open(options);
       if (typeof picked === "string") {
         setDraft(picked);
-        setProjectDir(picked);
+        setProjectPath(picked);
       }
     } catch (e) {
       toast.failure(e);
@@ -105,7 +127,7 @@ export default function Compose() {
 
       try {
         const dispose = await api.subscribeComposeExec(
-          projectDir,
+          projectPath,
           action,
           (line) => setOutput((prev) => (prev ? `${prev}\n${line}` : line)),
           { service, onEnd: settle },
@@ -121,21 +143,21 @@ export default function Compose() {
         toast.failure(e);
       } finally {
         setRunningAction(null);
-        await load(projectDir);
+        await load(projectPath);
       }
     });
   };
 
   const cancelAction = async () => {
     try {
-      await api.stopComposeExec(projectDir);
+      await api.stopComposeExec(projectPath);
       toast.push("accent", "Cancelled");
     } catch (e) {
       toast.failure(e);
     }
   };
 
-  const hasProject = !!projectDir.trim();
+  const hasProject = !!projectPath.trim();
 
   return (
     <div className="flex h-full flex-col gap-3 p-4">
@@ -144,18 +166,21 @@ export default function Compose() {
           <Input
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && setProjectDir(draft)}
-            placeholder="/path/to/project"
+            onKeyDown={(e) => e.key === "Enter" && setProjectPath(draft)}
+            placeholder="/path/to/project or /path/to/compose.yaml"
             className="min-w-72 flex-1 font-mono text-xs"
           />
-          <Button variant="subtle" size="sm" onClick={browse}>
-            Browse…
+          <Button variant="subtle" size="sm" onClick={() => browse("folder")}>
+            Folder…
+          </Button>
+          <Button variant="subtle" size="sm" onClick={() => browse("file")}>
+            File…
           </Button>
           <Button
             variant="subtle"
             size="sm"
-            disabled={draft === projectDir}
-            onClick={() => setProjectDir(draft)}
+            disabled={draft === projectPath}
+            onClick={() => setProjectPath(draft)}
           >
             Load
           </Button>
@@ -196,7 +221,7 @@ export default function Compose() {
         actions={
           <>
             {loading && <Spinner size={12} />}
-            <Button size="sm" variant="ghost" onClick={() => load(projectDir)} disabled={!hasProject}>
+            <Button size="sm" variant="ghost" onClick={() => load(projectPath)} disabled={!hasProject}>
               Refresh
             </Button>
           </>
@@ -206,11 +231,16 @@ export default function Compose() {
         {!hasProject ? (
           <EmptyState
             title="No project selected"
-            hint="Pick a directory containing compose.yaml or docker-compose.yml."
+            hint="Pick a folder holding compose.yaml or docker-compose.yml, or the compose file itself."
             action={
-              <Button variant="primary" size="sm" onClick={browse}>
-                Browse…
-              </Button>
+              <div className="flex gap-2">
+                <Button variant="primary" size="sm" onClick={() => browse("folder")}>
+                  Folder…
+                </Button>
+                <Button variant="subtle" size="sm" onClick={() => browse("file")}>
+                  File…
+                </Button>
+              </div>
             }
           />
         ) : error ? (

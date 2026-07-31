@@ -11,6 +11,7 @@ no longer maintained and lives only in the [previous repository](https://github.
 | [security.md](security.md) | Threat model, the injection and network-exposure defects fixed in the port, and the rules that keep them fixed |
 | [migration.md](migration.md) | Electron → Tauri feature mapping, what changed, what is still outstanding |
 | [testing.md](testing.md) | Test layout, what the live-daemon tests do to your machine, how to run them |
+| [updates.md](updates.md) | How in-app updates work, which install formats can use them, and the signing key the release needs |
 
 ## Quick orientation
 

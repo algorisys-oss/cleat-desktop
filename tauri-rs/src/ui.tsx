@@ -83,12 +83,15 @@ export function Button({
  * Light/dark toggle.
  *
  * A bulb rather than a sun/moon because the action is "turn the lights on",
- * which is what the control does — it lights the *app*, not the sky. Filled
- * with rays when light is active, outline when dark, so the state is legible
- * without colour alone carrying it.
+ * which is what the control does — it lights the *app*, not the sky. Filled,
+ * rayed, amber and glowing when light is active; a plain outline when dark. The
+ * fill and rays carry the state on their own, so the glow and the colour are
+ * decoration rather than the only signal — see `.bulb` in styles.css.
  *
- * `currentColor` throughout, so it inherits whatever contrast-checked ink token
- * the surrounding text uses instead of introducing a colour of its own.
+ * `currentColor` throughout, so it inherits a contrast-checked ink token rather
+ * than introducing a colour of its own. It rests at `ink-dim` rather than the
+ * `ink-faint` the status bar around it uses: at 16px in a strip of small grey
+ * text, the faint token made it read as decoration and it went unfound.
  */
 export function ThemeToggle({
   theme,
@@ -108,11 +111,13 @@ export function ThemeToggle({
       title={label}
       aria-label={label}
       aria-pressed={light}
-      className={`rounded p-1 text-ink-faint transition-colors hover:bg-surface-2 hover:text-ink ${className}`}
+      className={`rounded p-1 transition-colors outline-none hover:bg-surface-2 hover:text-ink focus-visible:ring-1 focus-visible:ring-accent/40 ${
+        light ? "text-warn" : "text-ink-dim"
+      } ${className}`}
     >
       <svg
-        width="14"
-        height="14"
+        width="16"
+        height="16"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
@@ -120,6 +125,7 @@ export function ThemeToggle({
         strokeLinecap="round"
         strokeLinejoin="round"
         aria-hidden="true"
+        className={`bulb ${light ? "bulb-lit" : ""}`}
       >
         {/* Glass */}
         <path

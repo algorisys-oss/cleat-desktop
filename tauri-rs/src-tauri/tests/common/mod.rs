@@ -459,6 +459,29 @@ pub mod suite {
         );
     }
 
+    /// A freshly created volume must be reported with a size.
+    ///
+    /// The listing endpoint never carries usage on either runtime, so this is
+    /// the claim the Size column rests on, and the two runtimes answer the
+    /// disk-usage endpoint in two different shapes. A live check is the only
+    /// thing that catches a daemon that stops filling either one in.
+    pub async fn volume_usage_reports_sizes(rt: &dyn ContainerRuntime, names: &Names) {
+        let name = format!("{}-usage", names.volume);
+        let _ = rt.remove_volume(&name, true).await; // leftover from an aborted run
+        rt.create_volume(&name, None).await.expect("create volume");
+
+        let usage = rt.volume_usage().await;
+        let _ = rt.remove_volume(&name, true).await;
+
+        let usage = usage.expect("volume usage");
+        // An empty volume is 0 bytes, not absent: absent means the daemon
+        // declined to size it, which the UI then has to render as unknown.
+        let size = usage
+            .get(&name)
+            .unwrap_or_else(|| panic!("{name} missing from disk usage: {usage:?}"));
+        assert_eq!(*size, 0, "a new volume holds nothing");
+    }
+
     pub async fn network_roundtrip(rt: &dyn ContainerRuntime, names: &Names) {
         let name = &names.network;
         if let Ok(existing) = rt.list_networks().await {

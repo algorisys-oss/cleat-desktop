@@ -607,6 +607,11 @@ impl ContainerRuntime for AuditRuntime {
             .await
     }
 
+    async fn volume_usage(&self) -> AppResult<std::collections::HashMap<String, i64>> {
+        self.record("volume_usage", Read, vec![], self.inner.volume_usage())
+            .await
+    }
+
     async fn create_volume(&self, name: &str, driver: Option<&str>) -> AppResult<Volume> {
         let shown = args([
             ("name", name.to_string()),
@@ -652,58 +657,62 @@ impl ContainerRuntime for AuditRuntime {
     // because compose is the one remaining subprocess and there the argv is
     // what happened.
 
-    async fn compose_services(&self, project_dir: &str) -> AppResult<Vec<ComposeService>> {
+    async fn compose_services(&self, project_path: &str) -> AppResult<Vec<ComposeService>> {
         let argv = self.compose_argv().join(" ");
         self.record_argv(
             "compose_services",
             Read,
             format!("{argv} ps --format json"),
-            args([("cwd", project_dir.to_string())]),
-            self.inner.compose_services(project_dir),
+            args([("project", project_path.to_string())]),
+            self.inner.compose_services(project_path),
         )
         .await
     }
 
-    async fn compose_up(&self, project_dir: &str) -> AppResult<String> {
+    async fn compose_up(&self, project_path: &str) -> AppResult<String> {
         let argv = self.compose_argv().join(" ");
         self.record_argv(
             "compose_up",
             Write,
             format!("{argv} up -d"),
-            args([("cwd", project_dir.to_string())]),
-            self.inner.compose_up(project_dir),
+            args([("project", project_path.to_string())]),
+            self.inner.compose_up(project_path),
         )
         .await
     }
 
-    async fn compose_down(&self, project_dir: &str) -> AppResult<String> {
+    async fn compose_down(&self, project_path: &str) -> AppResult<String> {
         let argv = self.compose_argv().join(" ");
         self.record_argv(
             "compose_down",
             Write,
             format!("{argv} down"),
-            args([("cwd", project_dir.to_string())]),
-            self.inner.compose_down(project_dir),
+            args([("project", project_path.to_string())]),
+            self.inner.compose_down(project_path),
         )
         .await
     }
 
-    async fn compose_restart(&self, project_dir: &str, service: Option<&str>) -> AppResult<String> {
+    async fn compose_restart(
+        &self,
+        project_path: &str,
+        service: Option<&str>,
+    ) -> AppResult<String> {
         let argv = self.compose_argv().join(" ");
         let suffix = service.map(|s| format!(" {s}")).unwrap_or_default();
         self.record_argv(
             "compose_restart",
             Write,
             format!("{argv} restart{suffix}"),
-            args([("cwd", project_dir.to_string())]),
-            self.inner.compose_restart(project_dir, service),
+            args([("project", project_path.to_string())]),
+            self.inner.compose_restart(project_path, service),
         )
         .await
     }
 
     async fn compose_exec(
         &self,
-        project_dir: &str,
+        project_path: &str,
         action: ComposeAction,
         service: Option<&str>,
     ) -> AppResult<compose::LineStream> {
@@ -714,8 +723,8 @@ impl ContainerRuntime for AuditRuntime {
             "compose_exec",
             Write,
             format!("{argv} {verb}{suffix}"),
-            args([("cwd", project_dir.to_string())]),
-            self.inner.compose_exec(project_dir, action, service),
+            args([("project", project_path.to_string())]),
+            self.inner.compose_exec(project_path, action, service),
         )
         .await
     }

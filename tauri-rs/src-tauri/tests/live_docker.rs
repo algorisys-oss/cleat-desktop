@@ -53,6 +53,14 @@ async fn volume_roundtrip() {
 }
 
 #[tokio::test]
+async fn volume_usage_reports_sizes() {
+    let Some((rt, names)) = rt().await else {
+        return;
+    };
+    suite::volume_usage_reports_sizes(&rt, &names).await;
+}
+
+#[tokio::test]
 async fn network_roundtrip() {
     let Some((rt, names)) = rt().await else {
         return;

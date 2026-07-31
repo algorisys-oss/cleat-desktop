@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import * as api from "../api";
 import { useBusyMap, useDebounced, usePolled, useSelection } from "../hooks";
 import type { Volume } from "../types";
@@ -26,8 +26,46 @@ import { formatBytes, isAnonymousVolume, runBulk, type BulkFailure } from "../ut
 
 type Scope = "all" | "named" | "anonymous";
 
+/**
+ * Volume sizes, fetched on demand rather than polled.
+ *
+ * The listing carries no usage — the daemon only computes it in its disk-usage
+ * report, which walks every volume and takes seconds on a machine with a few
+ * dozen of them. So it is asked for when the view opens and on an explicit
+ * refresh, never on the 8-second poll, and a failure leaves the column blank
+ * rather than taking the view down with it.
+ */
+function useVolumeUsage() {
+  const [sizes, setSizes] = useState<Record<string, number> | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      setSizes(await api.volumeUsage());
+    } catch {
+      setSizes(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  /** Bytes, or null while unknown — which is not the same as empty. */
+  const sizeOf = useCallback(
+    (v: Volume) => sizes?.[v.name] ?? (v.size !== null && v.size >= 0 ? v.size : null),
+    [sizes],
+  );
+
+  return { sizeOf, loading, reload };
+}
+
 export default function Volumes() {
   const volumes = usePolled<Volume[]>(() => api.listVolumes(), 8000);
+  const usage = useVolumeUsage();
   const [query, setQuery] = useState("");
   const search = useDebounced(query, 200);
   const { busy, run } = useBusyMap();
@@ -70,10 +108,13 @@ export default function Volumes() {
     () => (volumes.data ?? []).filter((v) => selection.selected.has(v.name)),
     [volumes.data, selection.selected],
   );
-  const selectedSize = selectedRows.reduce(
-    (sum, v) => sum + (v.size !== null && v.size > 0 ? v.size : 0),
-    0,
-  );
+  const selectedSize = selectedRows.reduce((sum, v) => sum + (usage.sizeOf(v) ?? 0), 0);
+
+  // Sizes come from a second, slower call, so a refresh has to ask for both.
+  const reloadAll = () => {
+    volumes.reload();
+    void usage.reload();
+  };
 
   const removeSelected = async () => {
     setBulkBusy(true);
@@ -85,7 +126,7 @@ export default function Volumes() {
       (v) => api.removeVolume(v.name, false),
     );
     setBulkBusy(false);
-    volumes.reload();
+    reloadAll();
     if (result.failures.length === 0) {
       toast.success(`${result.done} volume${result.done === 1 ? "" : "s"} removed`);
       selection.clear();
@@ -126,7 +167,7 @@ export default function Volumes() {
         <div className="ml-auto flex items-center gap-2 text-xs text-ink-faint">
           {volumes.loading && !volumes.initial && <Spinner size={12} />}
           <span>{rows.length} volumes</span>
-          <Button size="sm" variant="ghost" onClick={volumes.reload}>
+          <Button size="sm" variant="ghost" onClick={reloadAll}>
             Refresh
           </Button>
         </div>
@@ -179,7 +220,13 @@ export default function Volumes() {
                 <Th>Name</Th>
                 <Th>Driver</Th>
                 <Th>Mount point</Th>
-                <Th>Size</Th>
+                <Th>
+                  <span className="flex items-center gap-1.5">
+                    Size
+                    {/* Sizing walks every volume, so it lands after the list. */}
+                    {usage.loading && <Spinner size={10} />}
+                  </span>
+                </Th>
                 <Th className="text-right">Actions</Th>
               </tr>
             </thead>
@@ -218,8 +265,9 @@ export default function Volumes() {
                     {v.mountpoint}
                   </Td>
                   <Td className="text-ink-dim">
-                    {/* The daemon reports -1 when it hasn't computed usage. */}
-                    {v.size !== null && v.size >= 0 ? formatBytes(v.size) : "—"}
+                    {/* Blank until the usage call lands, and for any volume the
+                        daemon declines to size. */}
+                    {usage.sizeOf(v) !== null ? formatBytes(usage.sizeOf(v)!) : "—"}
                   </Td>
                   <Td>
                     <div className="flex justify-end gap-1">
@@ -243,7 +291,7 @@ export default function Volumes() {
           onClose={() => setCreating(false)}
           onCreated={() => {
             setCreating(false);
-            volumes.reload();
+            reloadAll();
           }}
         />
       )}
@@ -263,7 +311,7 @@ export default function Volumes() {
             try {
               await api.removeVolume(v.name, false);
               toast.success(`Volume ${v.name} removed`);
-              volumes.reload();
+              reloadAll();
             } catch (e) {
               toast.failure(e);
             }
@@ -287,7 +335,7 @@ export default function Volumes() {
           try {
             const reclaimed = await api.pruneVolumes();
             toast.success(`Reclaimed ${formatBytes(reclaimed)}`);
-            volumes.reload();
+            reloadAll();
           } catch (e) {
             toast.failure(e);
           }
